@@ -27,6 +27,28 @@ def create_document(title: str, folder_token: str = None) -> str:
 
     return response.data.document.document_id
 
+def add_blocks(document_id: str, blocks: list):
+    """
+    Add blocks to the document.
+    """
+    client = get_client()
+    
+    # Use document_id as block_id to append to the root of the document
+    request = CreateDocumentBlockChildrenRequest.builder() \
+        .document_id(document_id) \
+        .block_id(document_id) \
+        .request_body(CreateDocumentBlockChildrenRequestBody.builder()
+            .children(blocks)
+            .build()) \
+        .build()
+
+    response = client.docx.v1.document_block_children.create(request)
+
+    if not response.success():
+        raise Exception(f"Failed to add blocks: {response.code}, {response.msg}, {response.error}")
+    
+    return response.data.children
+
 def set_public_permission(token: str):
     """
     Set document permission to 'Organization members can edit'.
