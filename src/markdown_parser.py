@@ -234,20 +234,38 @@ class MarkdownParser:
             "underline": False
         }
         
+        current_link_url = None  # Track current link URL
+        
         for child in token.children:
+            if child.type == 'link_open':
+                # Start of a link - extract URL
+                current_link_url = child.attrs.get('href', '') if hasattr(child, 'attrs') else ''
+                
+            elif child.type == 'link_close':
+                # End of link
+                current_link_url = None
 
-            if child.type == 'text':
-                text_run = TextRun.builder() \
-                    .content(child.content) \
-                    .text_element_style(TextElementStyle.builder()
-                        .bold(current_style["bold"])
-                        .italic(current_style["italic"])
-                        .inline_code(current_style["code_inline"])
-                        .strikethrough(current_style["strike_through"])
-                        .underline(current_style["underline"])
-                        .build()) \
-                    .build()
-                elements.append(TextElement.builder().text_run(text_run).build())
+            elif child.type == 'text':
+                # Build text run with current styles
+                text_run_builder = TextRun.builder().content(child.content)
+                
+                # Build text element style
+                style_builder = TextElementStyle.builder() \
+                    .bold(current_style["bold"]) \
+                    .italic(current_style["italic"]) \
+                    .inline_code(current_style["code_inline"]) \
+                    .strikethrough(current_style["strike_through"]) \
+                    .underline(current_style["underline"])
+                
+                # Add link if we're inside a link
+                if current_link_url:
+                    from urllib.parse import quote
+                    # Encode URL completely (including : and /)
+                    encoded_url = quote(current_link_url, safe='')
+                    style_builder.link(Link.builder().url(encoded_url).build())
+                
+                text_run_builder.text_element_style(style_builder.build())
+                elements.append(TextElement.builder().text_run(text_run_builder.build()).build())
                 
             elif child.type == 'code_inline':
                 text_run = TextRun.builder() \
