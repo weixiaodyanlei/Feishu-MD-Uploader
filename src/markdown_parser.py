@@ -20,10 +20,12 @@ class BlockType:
     QUOTE = 15
     DIVIDER = 22
     IMAGE = 27
+    TABLE = 31
+    TABLE_CELL = 32
 
 class MarkdownParser:
     def __init__(self, image_uploader=None, document_id=None):
-        self.md = MarkdownIt()
+        self.md = MarkdownIt().enable('table')
         self.image_uploader = image_uploader
         self.document_id = document_id
 
@@ -213,9 +215,81 @@ class MarkdownParser:
                 while i < len(tokens) and tokens[i].type != 'blockquote_close':
                     i += 1
 
+            elif token.type == 'table_open':
+                table_block, new_index = self._parse_table(tokens, i)
+                blocks.append(table_block)
+                i = new_index
+                continue
+
             i += 1
             
         return blocks
+    
+    def _parse_table(self, tokens, start_index) -> tuple[Block, int]:
+        """Parse table tokens and return a Table Block and the new index."""
+        rows = [] # List[List[List[Block]]] (Row -> Col -> Content Blocks)
+        current_row = []
+        current_cell_blocks = []
+        
+        i = start_index + 1
+        while i < len(tokens):
+            token = tokens[i]
+            
+            if token.type == 'table_close':
+                break
+                
+            elif token.type == 'tr_open':
+                current_row = []
+                
+            elif token.type == 'tr_close':
+                rows.append(current_row)
+                
+            elif token.type in ['th_open', 'td_open']:
+                current_cell_blocks = []
+                
+            elif token.type in ['th_close', 'td_close']:
+                current_row.append(current_cell_blocks)
+                
+            elif token.type == 'inline':
+                # Parse inline content as a Text Block for the cell
+                # Note: Cells can theoretically contain other blocks, but MD tables usually just have inline text
+                text_elements = self._parse_inline(token)
+                text_block = Block.builder() \
+                    .block_type(BlockType.TEXT) \
+                    .text(Text.builder().elements(text_elements).build()) \
+                    .build()
+                current_cell_blocks.append(text_block)
+                
+            i += 1
+            
+        # Calculate dimensions
+        row_size = len(rows)
+        col_size = len(rows[0]) if rows else 0
+        
+        # Build Table Cell Blocks (Flat list)
+        cell_blocks = []
+        for row in rows:
+            for cell_content_blocks in row:
+                cell_block = Block.builder() \
+                    .block_type(BlockType.TABLE_CELL) \
+                    .table_cell(TableCell.builder().build()) \
+                    .children(cell_content_blocks) \
+                    .build()
+                cell_blocks.append(cell_block)
+                
+        # Build Table Block
+        table_block = Block.builder() \
+            .block_type(BlockType.TABLE) \
+            .table(Table.builder()
+                .property(TableProperty.builder()
+                    .row_size(row_size)
+                    .column_size(col_size)
+                    .build())
+                .build()) \
+            .children(cell_blocks) \
+            .build()
+            
+        return table_block, i + 1
     
     def get_pending_images(self):
         """Return list of images that need to be uploaded after blocks are created."""
