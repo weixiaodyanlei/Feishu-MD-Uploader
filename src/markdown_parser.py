@@ -26,7 +26,7 @@ class BlockType:
 
 class MarkdownParser:
     def __init__(self, image_uploader=None, document_id=None):
-        self.md = MarkdownIt().enable('table')
+        self.md = MarkdownIt('commonmark', {'html': True}).enable(['table', 'strikethrough'])
         self.image_uploader = image_uploader
         self.document_id = document_id
 
@@ -154,6 +154,113 @@ class MarkdownParser:
                 blocks.extend(list_blocks)
                 i = new_index
                 continue
+            
+            elif token.type == 'html_block':
+                # Handle HTML block tags like <center>, <div align="center">, etc.
+                content = token.content.strip()
+                
+                # Check if this is an opening tag that might span multiple blocks
+                if content in ['<center>', '<div align="center">', '<div align="left">', '<div align="right">']:
+                    # Look ahead to find the closing tag and collect content in between
+                    align_value = None
+                    if 'center' in content:
+                        align_value = 2
+                    elif 'left' in content:
+                        align_value = 1
+                    elif 'right' in content:
+                        align_value = 3
+                    
+                    if align_value:
+                        # Collect blocks until we find the closing tag
+                        collected_blocks = []
+                        j = i + 1
+                        closing_tag = '</center>' if '<center>' in content else '</div>'
+                        
+                        while j < len(tokens):
+                            if tokens[j].type == 'html_block' and tokens[j].content.strip() == closing_tag:
+                                # Found closing tag, create aligned block with collected content
+                                text_elements = []
+                                for idx, block in enumerate(collected_blocks):
+                                    if block.text and block.text.elements:
+                                        text_elements.extend(block.text.elements)
+                                        # Add newline between paragraphs (but not after the last one)
+                                        if idx < len(collected_blocks) - 1:
+                                            newline_element = TextElement.builder() \
+                                                .text_run(TextRun.builder().content("\n").build()) \
+                                                .build()
+                                            text_elements.append(newline_element)
+                                
+                                if text_elements:
+                                    aligned_block = Block.builder() \
+                                        .block_type(BlockType.TEXT) \
+                                        .text(Text.builder()
+                                            .style(TextStyle.builder().align(align_value).build())
+                                            .elements(text_elements)
+                                            .build()) \
+                                        .build()
+                                    blocks.append(aligned_block)
+                                
+                                i = j  # Skip to closing tag
+                                break
+                            elif tokens[j].type == 'paragraph_open':
+                                # Process paragraph content
+                                if j + 1 < len(tokens) and tokens[j+1].type == 'inline':
+                                    inline_elements = self._parse_inline(tokens[j+1])
+                                    temp_block = Block.builder() \
+                                        .block_type(BlockType.TEXT) \
+                                        .text(Text.builder().elements(inline_elements).build()) \
+                                        .build()
+                                    collected_blocks.append(temp_block)
+                            j += 1
+                    continue
+                
+                # Handle single-line alignment tags (original logic)
+                align_value = None
+                text_content = None
+                
+                # Check for <center> tag
+                if content.startswith('<center>') and content.endswith('</center>'):
+                    align_value = 2  # Center
+                    text_content = content[8:-9].strip()  # Remove <center> and </center>
+                # Check for <div align="..."> tag
+                elif content.startswith('<div align='):
+                    import re
+                    match = re.match(r'<div align=["\']?(center|left|right)["\']?>(.*?)</div>', content, re.DOTALL | re.IGNORECASE)
+                    if match:
+                        align_type = match.group(1).lower()
+                        text_content = match.group(2).strip()
+                        if align_type == 'center':
+                            align_value = 2
+                        elif align_type == 'left':
+                            align_value = 1
+                        elif align_type == 'right':
+                            align_value = 3
+                
+                if align_value and text_content:
+                    # Parse the text_content as Markdown to support formatting
+                    inner_tokens = self.md.parse(text_content)
+                    text_elements = []
+                    
+                    for inner_token in inner_tokens:
+                        if inner_token.type == 'inline':
+                            # Parse inline content (bold, italic, etc.)
+                            text_elements.extend(self._parse_inline(inner_token))
+                    
+                    # If no inline content found, treat as plain text
+                    if not text_elements:
+                        text_elements = [TextElement.builder()
+                            .text_run(TextRun.builder().content(text_content).build())
+                            .build()]
+                    
+                    block = Block.builder() \
+                        .block_type(BlockType.TEXT) \
+                        .text(Text.builder()
+                            .style(TextStyle.builder().align(align_value).build())
+                            .elements(text_elements)
+                            .build()) \
+                        .build()
+                    blocks.append(block)
+                # If not recognized alignment tag, ignore it
             
             elif token.type == 'hr':
                 block = Block.builder() \
@@ -339,67 +446,111 @@ class MarkdownParser:
         """Return list of images that need to be uploaded after blocks are created."""
         return getattr(self, '_pending_images', [])
 
-    def _parse_inline(self, token) -> List[TextElement]:
+    def _parse_inline(self, token):
         elements = []
-        if not token.children:
-            return elements
-            
-        current_style = {
-            "bold": False,
-            "italic": False,
-            "code_inline": False,
-            "strike_through": False,
-            "underline": False
+        # Track active styles
+        style_state = {
+            'bold': False,
+            'italic': False,
+            'strike': False,
+            'underline': False,
+            'code': False
         }
-        
-        current_link_url = None  # Track current link URL
+        current_link_url = None
         
         for child in token.children:
-            if child.type == 'link_open':
-                # Start of a link - extract URL
-                current_link_url = child.attrs.get('href', '') if hasattr(child, 'attrs') else ''
+            if child.type == 'text':
+                text_style_builder = TextElementStyle.builder() \
+                    .bold(style_state['bold']) \
+                    .italic(style_state['italic']) \
+                    .strikethrough(style_state['strike']) \
+                    .underline(style_state['underline']) \
+                    .inline_code(style_state['code'])
                 
-            elif child.type == 'link_close':
-                # End of link
-                current_link_url = None
-
-            elif child.type == 'text':
-                # Build text run with current styles
-                text_run_builder = TextRun.builder().content(child.content)
-                
-                # Build text element style
-                style_builder = TextElementStyle.builder() \
-                    .bold(current_style["bold"]) \
-                    .italic(current_style["italic"]) \
-                    .inline_code(current_style["code_inline"]) \
-                    .strikethrough(current_style["strike_through"]) \
-                    .underline(current_style["underline"])
-                
-                # Add link if we're inside a link
+                # Add link if we're inside one
                 if current_link_url:
                     from urllib.parse import quote
-                    # Encode URL completely (including : and /)
                     encoded_url = quote(current_link_url, safe='')
-                    style_builder.link(Link.builder().url(encoded_url).build())
+                    text_style_builder.link(Link.builder().url(encoded_url).build())
                 
-                text_run_builder.text_element_style(style_builder.build())
-                elements.append(TextElement.builder().text_run(text_run_builder.build()).build())
-                
-            elif child.type == 'code_inline':
                 text_run = TextRun.builder() \
                     .content(child.content) \
-                    .text_element_style(TextElementStyle.builder().inline_code(True).build()) \
+                    .text_element_style(text_style_builder.build()) \
                     .build()
-                elements.append(TextElement.builder().text_run(text_run).build())
+                    
+                element = TextElement.builder().text_run(text_run).build()
+                elements.append(element)
+                
+            elif child.type == 'code_inline':
+                text_style_builder = TextElementStyle.builder() \
+                    .inline_code(True) \
+                    .bold(style_state['bold']) \
+                    .italic(style_state['italic']) \
+                    .strikethrough(style_state['strike']) \
+                    .underline(style_state['underline'])
+                
+                if current_link_url:
+                    from urllib.parse import quote
+                    encoded_url = quote(current_link_url, safe='')
+                    text_style_builder.link(Link.builder().url(encoded_url).build())
+                
+                text_run = TextRun.builder() \
+                    .content(child.content) \
+                    .text_element_style(text_style_builder.build()) \
+                    .build()
+                    
+                element = TextElement.builder().text_run(text_run).build()
+                elements.append(element)
                 
             elif child.type == 'strong_open':
-                current_style["bold"] = True
+                style_state['bold'] = True
             elif child.type == 'strong_close':
-                current_style["bold"] = False
+                style_state['bold'] = False
+                
             elif child.type == 'em_open':
-                current_style["italic"] = True
+                style_state['italic'] = True
             elif child.type == 'em_close':
-                current_style["italic"] = False
+                style_state['italic'] = False
+                
+            elif child.type == 's_open':  # Markdown strikethrough ~~text~~
+                style_state['strike'] = True
+            elif child.type == 's_close':
+                style_state['strike'] = False
+                
+            elif child.type == 'link_open':
+                current_link_url = child.attrs.get('href', '') if hasattr(child, 'attrs') else ''
+            elif child.type == 'link_close':
+                current_link_url = None
+                
+            elif child.type == 'softbreak':
+                # Add newline for soft breaks
+                text_run = TextRun.builder().content("\n").build()
+                element = TextElement.builder().text_run(text_run).build()
+                elements.append(element)
+                
+            elif child.type == 'html_inline':
+                tag = child.content.lower()
+                if tag in ['<b>', '<strong>']:
+                    style_state['bold'] = True
+                elif tag in ['</b>', '</strong>']:
+                    style_state['bold'] = False
+                elif tag in ['<i>', '<em>']:
+                    style_state['italic'] = True
+                elif tag in ['</i>', '</em>']:
+                    style_state['italic'] = False
+                elif tag in ['<s>', '<strike>', '<del>']:
+                    style_state['strike'] = True
+                elif tag in ['</s>', '</strike>', '</del>']:
+                    style_state['strike'] = False
+                elif tag == '<u>':
+                    style_state['underline'] = True
+                elif tag == '</u>':
+                    style_state['underline'] = False
+                elif tag == '<br>' or tag == '<br/>':
+                    # Add newline
+                    text_run = TextRun.builder().content("\n").build()
+                    element = TextElement.builder().text_run(text_run).build()
+                    elements.append(element)
             
         return elements
 
