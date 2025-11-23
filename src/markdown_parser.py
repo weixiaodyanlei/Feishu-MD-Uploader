@@ -22,6 +22,7 @@ class BlockType:
     IMAGE = 27
     TABLE = 31
     TABLE_CELL = 32
+    TODO = 17
 
 class MarkdownParser:
     def __init__(self, image_uploader=None, document_id=None):
@@ -143,45 +144,16 @@ class MarkdownParser:
                 blocks.append(block)
                 
             elif token.type == 'bullet_list_open':
-                i += 1
+                list_blocks, new_index = self._parse_list(tokens, i, BlockType.BULLET)
+                blocks.extend(list_blocks)
+                i = new_index
                 continue
                 
             elif token.type == 'ordered_list_open':
-                i += 1
+                list_blocks, new_index = self._parse_list(tokens, i, BlockType.ORDERED)
+                blocks.extend(list_blocks)
+                i = new_index
                 continue
-                
-            elif token.type == 'list_item_open':
-                j = i + 1
-                while j < len(tokens) and tokens[j].type != 'inline':
-                    j += 1
-                
-                if j < len(tokens) and tokens[j].type == 'inline':
-                    text_elements = self._parse_inline(tokens[j])
-                    
-                    list_type = BlockType.BULLET
-                    k = i - 1
-                    while k >= 0:
-                        if tokens[k].type == 'ordered_list_open':
-                            list_type = BlockType.ORDERED
-                            break
-                        if tokens[k].type == 'bullet_list_open':
-                            list_type = BlockType.BULLET
-                            break
-                        k -= 1
-                    
-                    block = Block.builder() \
-                        .block_type(list_type) \
-                        .build()
-                    
-                    if list_type == BlockType.BULLET:
-                        block.bullet = Text.builder().elements(text_elements).build()
-                    else:
-                        block.ordered = Text.builder().elements(text_elements).build()
-                        
-                    blocks.append(block)
-                    
-                while i < len(tokens) and tokens[i].type != 'list_item_close':
-                    i += 1
             
             elif token.type == 'hr':
                 block = Block.builder() \
@@ -283,6 +255,86 @@ class MarkdownParser:
             
         return table_block, i + 1
     
+    def _parse_list(self, tokens, start_index, list_type) -> tuple[List[Block], int]:
+        """Recursively parse list tokens."""
+        blocks = []
+        i = start_index + 1
+        
+        while i < len(tokens):
+            token = tokens[i]
+            
+            if (list_type == BlockType.BULLET and token.type == 'bullet_list_close') or \
+               (list_type == BlockType.ORDERED and token.type == 'ordered_list_close'):
+                return blocks, i + 1
+                
+            elif token.type == 'list_item_open':
+                # Parse content of list item
+                # Content usually starts with paragraph_open -> inline -> paragraph_close
+                # Or nested list
+                
+                current_block = None
+                children = []
+                
+                j = i + 1
+                while j < len(tokens) and tokens[j].type != 'list_item_close':
+                    sub_token = tokens[j]
+                    
+                    if sub_token.type == 'inline':
+                        # Found text content
+                        text_elements = self._parse_inline(sub_token)
+                        
+                        # Check for Todo
+                        is_todo = False
+                        is_checked = False
+                        
+                        # Check first text element for [ ] or [x]
+                        if text_elements and text_elements[0].text_run:
+                            content = text_elements[0].text_run.content
+                            if content.startswith('[ ] ') or content.startswith('[x] '):
+                                is_todo = True
+                                is_checked = content.startswith('[x] ')
+                                # Remove the marker from content
+                                text_elements[0].text_run.content = content[4:]
+                        
+                        if is_todo:
+                            current_block = Block.builder() \
+                                .block_type(BlockType.TODO) \
+                                .todo(Text.builder()
+                                    .style(TextStyle.builder().done(is_checked).build())
+                                    .elements(text_elements)
+                                    .build()) \
+                                .build()
+                        else:
+                            current_block = Block.builder() \
+                                .block_type(list_type) \
+                                .build()
+                            
+                            if list_type == BlockType.BULLET:
+                                current_block.bullet = Text.builder().elements(text_elements).build()
+                            else:
+                                current_block.ordered = Text.builder().elements(text_elements).build()
+                                
+                    elif sub_token.type == 'bullet_list_open':
+                        nested_blocks, new_j = self._parse_list(tokens, j, BlockType.BULLET)
+                        children.extend(nested_blocks)
+                        j = new_j - 1 # Adjust for loop increment
+                        
+                    elif sub_token.type == 'ordered_list_open':
+                        nested_blocks, new_j = self._parse_list(tokens, j, BlockType.ORDERED)
+                        children.extend(nested_blocks)
+                        j = new_j - 1
+                        
+                    j += 1
+                
+                if current_block:
+                    if children:
+                        current_block.children = children
+                    blocks.append(current_block)
+                
+                i = j # Move main loop to list_item_close
+                
+            i += 1
+            
     def get_pending_images(self):
         """Return list of images that need to be uploaded after blocks are created."""
         return getattr(self, '_pending_images', [])

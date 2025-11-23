@@ -57,49 +57,56 @@ def add_blocks(document_id: str, blocks: list, parent_id: str = None):
     current_batch = []
     
     for block in blocks:
-        if block.block_type == 31: # Table
+        # 1. Save children content
+        original_children = block.children
+        
+        # 2. Clear children for creation (create empty block first)
+        # Note: Feishu API doesn't support creating nested children directly in 'children' field for most blocks
+        block.children = None
+        
+        # 3. Create Block
+        # Flush current batch if we need to handle this block individually (e.g. Table or block with children)
+        # Actually, if we strip children, we can batch create them?
+        # Yes, but we need to map the created block back to its original children to populate them.
+        # So we must create them one by one or maintain a mapping.
+        # Simplest approach: Flush batch, create this block, populate children.
+        
+        if original_children or block.block_type == 31: # Has children or is Table
             # Flush current batch first
             if current_batch:
                 all_created_children.extend(flush_batch(current_batch))
                 current_batch = []
+                
+            # Create this block
+            created_blocks = flush_batch([block])
+            all_created_children.extend(created_blocks)
             
-            # Handle Table
-            # 1. Save content (TableCell blocks)
-            original_cells = block.children
-            # 2. Clear children for creation (create empty table)
-            block.children = None
-            
-            # 3. Create Table
-            created_table_children = flush_batch([block])
-            all_created_children.extend(created_table_children)
-            
-            if not created_table_children:
+            if not created_blocks:
                 continue
                 
-            created_table = created_table_children[0]
+            created_block = created_blocks[0]
             
-            # 4. Fill Cells
-            if not created_table.table or not created_table.table.cells:
-                print("Warning: Created table has no cells")
-                continue
+            # 4. Handle Children
+            if block.block_type == 31: # Table Special Handling
+                if not created_block.table or not created_block.table.cells:
+                    print("Warning: Created table has no cells")
+                    continue
+                cell_ids = created_block.table.cells
+                # Recursively add content to cells
+                for i, cell_id in enumerate(cell_ids):
+                    if original_children and i < len(original_children):
+                        # original_children[i] is a TableCell block (32)
+                        # We want its children (the content)
+                        cell_content = original_children[i].children
+                        if cell_content:
+                            add_blocks(document_id, cell_content, parent_id=cell_id)
+            
+            elif original_children: # General Nested Block (e.g. List)
+                # Recursively add children to this block
+                add_blocks(document_id, original_children, parent_id=created_block.block_id)
                 
-            cell_ids = created_table.table.cells
-            
-            # Check if dimensions match
-            if len(cell_ids) != len(original_cells):
-                print(f"Warning: Cell count mismatch. Created: {len(cell_ids)}, Parsed: {len(original_cells)}")
-            
-            # Recursively add content to cells
-            for i, cell_id in enumerate(cell_ids):
-                if i < len(original_cells):
-                    # original_cells[i] is a TableCell block (32)
-                    # We want its children (the content)
-                    cell_content = original_cells[i].children
-                    if cell_content:
-                        # Recursive call to add content to the cell
-                        add_blocks(document_id, cell_content, parent_id=cell_id)
-                        
         else:
+            # No children, just add to batch
             current_batch.append(block)
             
     # Flush remaining
