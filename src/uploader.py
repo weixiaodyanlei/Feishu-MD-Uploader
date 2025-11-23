@@ -2,6 +2,8 @@ import argparse
 import os
 import sys
 from pathlib import Path
+import requests
+import tempfile
 
 # Add src to path so we can import modules if running directly
 sys.path.append(str(Path(__file__).parent.parent))
@@ -75,12 +77,38 @@ def main():
                 # Get base directory of Markdown file
                 markdown_dir = os.path.dirname(os.path.abspath(args.file))
                 
+
                 for img_info in pending_images:
                     block_index = img_info['block_index']
                     image_path = img_info['image_path']
-                    # Resolve relative path to absolute
-                    if not os.path.isabs(image_path):
-                        image_path = os.path.join(markdown_dir, image_path)
+                    temp_file_path = None
+
+                    # Check if it's a URL
+                    if image_path.startswith(('http://', 'https://')):
+                        print(f"   - Downloading image: {image_path}")
+                        try:
+                            response = requests.get(image_path, stream=True, timeout=10)
+                            response.raise_for_status()
+                            
+                            # Determine extension
+                            suffix = os.path.splitext(image_path)[1]
+                            # Basic validation for extension
+                            if not suffix or len(suffix) > 5 or '?' in suffix:
+                                suffix = '.png'
+                                
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                                for chunk in response.iter_content(chunk_size=8192):
+                                    tmp.write(chunk)
+                                temp_file_path = tmp.name
+                                image_path = temp_file_path # Update path to local temp file
+                                
+                        except Exception as e:
+                            print(f"     ❌ Failed to download image: {e}")
+                            continue
+                    else:
+                        # Resolve relative path to absolute
+                        if not os.path.isabs(image_path):
+                            image_path = os.path.join(markdown_dir, image_path)
                     
                     if block_index < len(block_id_map):
                         block_id = block_id_map[block_index]
@@ -90,6 +118,10 @@ def main():
                             print(f"     ✅ Image uploaded and set")
                         else:
                             print(f"     ❌ Failed to upload image")
+                            
+                    # Clean up temp file
+                    if temp_file_path and os.path.exists(temp_file_path):
+                        os.remove(temp_file_path)
                 print("✅ Images processed.")
 
         # 5. Set Permissions

@@ -96,30 +96,22 @@ class MarkdownParser:
                         # Step 1: Create empty Image Block
                         # We'll upload and update later
                         src = image_token.attrs.get('src', '')
-                        if not src.startswith('http') and not src.startswith('//'):
-                            # Create empty Image block
-                            block = Block.builder() \
-                                .block_type(BlockType.IMAGE) \
-                                .image(Image.builder().build()) \
-                                .build()
-                            blocks.append(block)
-                            
-                            # Record image info for later upload
-                            if not hasattr(self, '_pending_images'):
-                                self._pending_images = []
-                            self._pending_images.append({
-                                'block_index': len(blocks) - 1,
-                                'image_path': src,
-                                'alt': image_token.content if hasattr(image_token, 'content') else ''
-                            })
-                        else:
-                            # Remote image - treat as text for now
-                            text_elements = self._parse_inline(inline_token)
-                            block = Block.builder() \
-                                .block_type(BlockType.TEXT) \
-                                .text(Text.builder().elements(text_elements).build()) \
-                                .build()
-                            blocks.append(block)
+                        # Create empty Image block
+                        src = image_token.attrs.get('src', '')
+                        block = Block.builder() \
+                            .block_type(BlockType.IMAGE) \
+                            .image(Image.builder().build()) \
+                            .build()
+                        blocks.append(block)
+                        
+                        # Record image info for later upload
+                        if not hasattr(self, '_pending_images'):
+                            self._pending_images = []
+                        self._pending_images.append({
+                            'block_index': len(blocks) - 1,
+                            'image_path': src,
+                            'alt': image_token.content if hasattr(image_token, 'content') else ''
+                        })
                     else:
                         # Regular Text Block
                         text_elements = self._parse_inline(inline_token)
