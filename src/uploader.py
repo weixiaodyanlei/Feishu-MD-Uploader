@@ -43,6 +43,7 @@ def main():
     parser = argparse.ArgumentParser(description="Feishu Markdown Uploader")
     parser.add_argument("file", help="Path to the Markdown file")
     parser.add_argument("--title", help="Document title")
+    parser.add_argument("--folder-token", help="Target Feishu folder token")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode (show all logs)")
     parser.add_argument("--env-file", help="Path to .env file")
 
@@ -70,10 +71,13 @@ def main():
     client = get_client(debug=args.debug) # Initialize client for ImageUploader
 
     try:
+        folder_token = args.folder_token or Config.FOLDER_TOKEN
         # 1. Create Document (First, to get document_id for image upload)
         if args.debug:
             print("Creating document...")
-        doc_token = create_document(title)
+            if folder_token:
+                print(f"Using folder token: {folder_token}")
+        doc_token = create_document(title, folder_token)
         if args.debug:
             print(f"✅ Document created. Token: {doc_token}")
         print(f"🔗 URL: {Config.FEISHU_DOC_HOST}/docx/{doc_token}")

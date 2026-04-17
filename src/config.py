@@ -9,6 +9,8 @@ class Config:
     APP_SECRET = os.getenv("APP_SECRET")
     # Default to generic feishu.cn, but allow override for tenant-specific domains
     FEISHU_DOC_HOST = os.getenv("FEISHU_DOC_HOST", "https://www.feishu.cn")
+    # Optional default folder token for document creation
+    FOLDER_TOKEN = os.getenv("FOLDER_TOKEN")
 
     @classmethod
     def validate(cls):
