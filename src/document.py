@@ -1,4 +1,6 @@
 import json
+import random
+import time
 import lark_oapi as lark
 from lark_oapi.api.docx.v1.model import *
 from lark_oapi.api.drive.v1.model import *
@@ -27,6 +29,10 @@ def create_document(title: str, folder_token: str = None) -> str:
 
     return response.data.document.document_id
 
+    return response.data.document.document_id
+
+    return response.data.document.document_id
+
 def add_blocks(document_id: str, blocks: list, parent_id: str = None):
     """
     Add blocks to the document or a specific parent block.
@@ -36,6 +42,47 @@ def add_blocks(document_id: str, blocks: list, parent_id: str = None):
         parent_id = document_id
         
     client = get_client()
+
+    def _text_len(text_obj) -> int:
+        if not text_obj or not getattr(text_obj, "elements", None):
+            return 0
+        total = 0
+        for el in text_obj.elements:
+            tr = getattr(el, "text_run", None)
+            if tr and getattr(tr, "content", None):
+                total += len(tr.content)
+        return total
+
+    def _block_summary(block) -> dict:
+        # Keep it small: only what's useful for "invalid param" debugging.
+        bt = getattr(block, "block_type", None)
+        summary = {"block_type": bt}
+        if bt == 2:  # TEXT
+            summary["text_len"] = _text_len(getattr(block, "text", None))
+        elif bt == 14:  # CODE
+            summary["code_len"] = _text_len(getattr(block, "code", None))
+        elif bt == 15:  # QUOTE
+            summary["quote_len"] = _text_len(getattr(block, "quote", None))
+        elif bt in (3, 4, 5, 6, 7, 8, 9, 10, 11):  # HEADINGS
+            # heading1..heading9
+            for lvl in range(1, 10):
+                t = getattr(block, f"heading{lvl}", None)
+                if t:
+                    summary[f"heading{lvl}_len"] = _text_len(t)
+                    break
+        elif bt in (12, 13):  # LIST
+            field = "bullet" if bt == 12 else "ordered"
+            summary[f"{field}_len"] = _text_len(getattr(block, field, None))
+            summary["children_count"] = len(getattr(block, "children", None) or [])
+        elif bt == 31:  # TABLE
+            summary["children_count"] = len(getattr(block, "children", None) or [])
+        elif bt == 32:  # TABLE_CELL
+            summary["children_count"] = len(getattr(block, "children", None) or [])
+        elif bt == 27:  # IMAGE
+            summary["has_image"] = bool(getattr(block, "image", None))
+        else:
+            summary["children_count"] = len(getattr(block, "children", None) or [])
+        return summary
     
     # Helper to flush a batch of regular blocks
     def flush_batch(batch):
@@ -48,10 +95,40 @@ def add_blocks(document_id: str, blocks: list, parent_id: str = None):
                 .children(batch)
                 .build()) \
             .build()
-        response = client.docx.v1.document_block_children.create(request)
-        if not response.success():
-             raise Exception(f"Failed to add blocks: {response.code}, {response.msg}, {response.error}")
-        return response.data.children
+        max_attempts = 5
+        base_delay = 1.0
+        retryable_codes = {429, 500, 502, 503, 504}
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = client.docx.v1.document_block_children.create(request)
+            except Exception as e:
+                # Network-level/transient failures (e.g., ConnectionResetError 10054)
+                if attempt >= max_attempts:
+                    raise Exception(
+                        f"Failed to add blocks after {max_attempts} attempts due to connection error: {e}"
+                    ) from e
+                sleep_seconds = (base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
+                time.sleep(sleep_seconds)
+                continue
+
+            if response.success():
+                return response.data.children
+
+            # Retry only for common transient API errors
+            if response.code in retryable_codes and attempt < max_attempts:
+                sleep_seconds = (base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
+                time.sleep(sleep_seconds)
+                continue
+
+            debug_batch = [_block_summary(b) for b in batch]
+            raise Exception(
+                f"Failed to add blocks: {response.code}, {response.msg}, {response.error}. "
+                f"Batch summary: {json.dumps(debug_batch, ensure_ascii=False)}"
+            )
+
+        # Unreachable fallback for type checkers/readability.
+        return []
 
     all_created_children = []
     current_batch = []

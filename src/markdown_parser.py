@@ -30,6 +30,28 @@ class MarkdownParser:
         self.image_uploader = image_uploader
         self.document_id = document_id
 
+    def _elements_text_len(self, elements) -> int:
+        if not elements:
+            return 0
+        total = 0
+        for el in elements:
+            tr = getattr(el, "text_run", None)
+            if tr and getattr(tr, "content", None):
+                total += len(tr.content)
+        return total
+
+    def _make_text_block(self, text_elements, align: int = None):
+        """Create a TEXT block only when it has non-empty content."""
+        if self._elements_text_len(text_elements) == 0:
+            return None
+        text_builder = Text.builder().elements(text_elements)
+        if align is not None:
+            text_builder.style(TextStyle.builder().align(align).build())
+        return Block.builder() \
+            .block_type(BlockType.TEXT) \
+            .text(text_builder.build()) \
+            .build()
+
     def parse(self, content: str) -> List[Block]:
         tokens = self.md.parse(content)
         blocks = []
@@ -44,6 +66,11 @@ class MarkdownParser:
                 # Get content from the next inline token
                 inline_token = tokens[i + 1]
                 text_elements = self._parse_inline(inline_token)
+
+                # Feishu API rejects empty headings; skip if no actual text.
+                if self._elements_text_len(text_elements) == 0:
+                    i += 2  # Skip inline and heading_close
+                    continue
                 
                 # Map level to BlockType
                 # HEADING1 is 3, so level 1 -> 3, level 2 -> 4...
@@ -116,11 +143,9 @@ class MarkdownParser:
                     else:
                         # Regular Text Block
                         text_elements = self._parse_inline(inline_token)
-                        block = Block.builder() \
-                            .block_type(BlockType.TEXT) \
-                            .text(Text.builder().elements(text_elements).build()) \
-                            .build()
-                        blocks.append(block)
+                        block = self._make_text_block(text_elements)
+                        if block:
+                            blocks.append(block)
                     i += 2
                 else:
                     i += 1
@@ -186,18 +211,15 @@ class MarkdownParser:
                                         # Add newline between paragraphs (but not after the last one)
                                         if idx < len(collected_blocks) - 1:
                                             newline_element = TextElement.builder() \
-                                                .text_run(TextRun.builder().content("\n").build()) \
+                                                .text_run(TextRun.builder()
+                                                    .content("\n")
+                                                    .text_element_style(TextElementStyle.builder().build())
+                                                    .build()) \
                                                 .build()
                                             text_elements.append(newline_element)
                                 
-                                if text_elements:
-                                    aligned_block = Block.builder() \
-                                        .block_type(BlockType.TEXT) \
-                                        .text(Text.builder()
-                                            .style(TextStyle.builder().align(align_value).build())
-                                            .elements(text_elements)
-                                            .build()) \
-                                        .build()
+                                aligned_block = self._make_text_block(text_elements, align=align_value)
+                                if aligned_block:
                                     blocks.append(aligned_block)
                                 
                                 i = j  # Skip to closing tag
@@ -206,11 +228,9 @@ class MarkdownParser:
                                 # Process paragraph content
                                 if j + 1 < len(tokens) and tokens[j+1].type == 'inline':
                                     inline_elements = self._parse_inline(tokens[j+1])
-                                    temp_block = Block.builder() \
-                                        .block_type(BlockType.TEXT) \
-                                        .text(Text.builder().elements(inline_elements).build()) \
-                                        .build()
-                                    collected_blocks.append(temp_block)
+                                    temp_block = self._make_text_block(inline_elements)
+                                    if temp_block:
+                                        collected_blocks.append(temp_block)
                             j += 1
                     continue
                 
@@ -252,14 +272,9 @@ class MarkdownParser:
                             .text_run(TextRun.builder().content(text_content).build())
                             .build()]
                     
-                    block = Block.builder() \
-                        .block_type(BlockType.TEXT) \
-                        .text(Text.builder()
-                            .style(TextStyle.builder().align(align_value).build())
-                            .elements(text_elements)
-                            .build()) \
-                        .build()
-                    blocks.append(block)
+                    block = self._make_text_block(text_elements, align=align_value)
+                    if block:
+                        blocks.append(block)
                 # If not recognized alignment tag, ignore it
             
             elif token.type == 'hr':
@@ -270,21 +285,34 @@ class MarkdownParser:
                 blocks.append(block)
 
             elif token.type == 'blockquote_open':
+                # Collect all inline contents inside this blockquote.
+                # markdown-it tokenizes multi-paragraph quotes as multiple (paragraph_open -> inline -> paragraph_close).
+                collected_elements = []
                 j = i + 1
-                while j < len(tokens) and tokens[j].type != 'inline':
+                first_inline = True
+                while j < len(tokens) and tokens[j].type != 'blockquote_close':
+                    if tokens[j].type == 'inline':
+                        if not first_inline:
+                            newline_element = TextElement.builder() \
+                                .text_run(TextRun.builder()
+                                    .content("\n")
+                                    .text_element_style(TextElementStyle.builder().build())
+                                    .build()) \
+                                .build()
+                            collected_elements.append(newline_element)
+                        collected_elements.extend(self._parse_inline(tokens[j]))
+                        first_inline = False
                     j += 1
-                
-                if j < len(tokens) and tokens[j].type == 'inline':
-                    text_elements = self._parse_inline(tokens[j])
-                    
+
+                if collected_elements:
                     block = Block.builder() \
                         .block_type(BlockType.QUOTE) \
-                        .quote(Text.builder().elements(text_elements).build()) \
+                        .quote(Text.builder().elements(collected_elements).build()) \
                         .build()
                     blocks.append(block)
-                
-                while i < len(tokens) and tokens[i].type != 'blockquote_close':
-                    i += 1
+
+                # Skip to the end of this blockquote; main loop will then i += 1
+                i = j
 
             elif token.type == 'table_open':
                 table_block, new_index = self._parse_table(tokens, i)
@@ -325,11 +353,9 @@ class MarkdownParser:
                 # Parse inline content as a Text Block for the cell
                 # Note: Cells can theoretically contain other blocks, but MD tables usually just have inline text
                 text_elements = self._parse_inline(token)
-                text_block = Block.builder() \
-                    .block_type(BlockType.TEXT) \
-                    .text(Text.builder().elements(text_elements).build()) \
-                    .build()
-                current_cell_blocks.append(text_block)
+                text_block = self._make_text_block(text_elements)
+                if text_block:
+                    current_cell_blocks.append(text_block)
                 
             i += 1
             
@@ -524,7 +550,10 @@ class MarkdownParser:
                 
             elif child.type == 'softbreak':
                 # Add newline for soft breaks
-                text_run = TextRun.builder().content("\n").build()
+                text_run = TextRun.builder() \
+                    .content("\n") \
+                    .text_element_style(TextElementStyle.builder().build()) \
+                    .build()
                 element = TextElement.builder().text_run(text_run).build()
                 elements.append(element)
                 
@@ -548,7 +577,10 @@ class MarkdownParser:
                     style_state['underline'] = False
                 elif tag == '<br>' or tag == '<br/>':
                     # Add newline
-                    text_run = TextRun.builder().content("\n").build()
+                    text_run = TextRun.builder() \
+                        .content("\n") \
+                        .text_element_style(TextElementStyle.builder().build()) \
+                        .build()
                     element = TextElement.builder().text_run(text_run).build()
                     elements.append(element)
             
