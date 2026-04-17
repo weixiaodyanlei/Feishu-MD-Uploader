@@ -270,6 +270,52 @@ Setting permissions...
 🎉 Upload complete!
 ```
 
+### 4. 删除文档
+
+项目提供了两个删除脚本，分别用于单文档删除和批量删除。
+
+#### 单个删除（`delete_doc.py`）
+
+已知文档 token 时，可直接删除单个文档：
+
+```bash
+python delete_doc.py <doc_token>
+```
+
+示例：
+
+```bash
+python delete_doc.py doxcnxxxxxxxxxxxx
+```
+
+#### 批量删除（`batch_delete.py`）
+
+先查看文档列表，再按 token / 关键字 / 全量删除：
+
+```bash
+# 查看当前可删除的 docx 文档（含 token 和 URL）
+python batch_delete.py --list
+
+# 按 token 批量删除
+python batch_delete.py token1 token2 token3
+
+# 按标题关键字删除（不区分大小写）
+python batch_delete.py --pattern "Test"
+
+# 删除全部文档（默认会二次确认）
+python batch_delete.py --all
+```
+
+可选参数：
+
+- `-y`, `--yes`：跳过确认提示，直接执行删除（高风险，建议谨慎使用）
+
+#### 删除功能注意事项
+
+- 删除操作针对飞书 `docx` 文档类型。
+- 默认会进行确认，输入 `yes` 或 `y` 才会继续删除（使用 `-y` 可跳过）。
+- 删除前建议先执行 `python batch_delete.py --list` 做一次核对，避免误删。
+
 ## 📋 支持的 Markdown 元素
 
 ### ✅ 完全支持
@@ -369,6 +415,8 @@ Feishu-MD-Uploader/
 │   ├── markdown_parser.py   # Markdown 解析核心
 │   ├── image_uploader.py    # 图片上传处理
 │   └── uploader.py          # 主程序入口
+├── delete_doc.py            # 单个文档删除工具
+├── batch_delete.py          # 批量文档删除工具
 ├── tests/
 │   └── fixtures/            # 测试用 Markdown 文件
 ├── .env.example             # 环境变量模板
