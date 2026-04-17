@@ -217,7 +217,8 @@ var turndownPluginGfm = (function (exports) {
             var borderCells = '';
             var alignMap = { left: ':--', right: '--:', center: ':-:' };
 
-            if (isHeadingRow(node) || isFirstRow(node)) {
+            // 有 THEAD 时仅在表头行生成分隔线；无表头时才兜底用首行
+            if (isHeadingRow(node) || (!hasTableHeading(node) && isFirstRow(node))) {
                 for (var i = 0; i < node.childNodes.length; i++) {
                     var border = '---';
                     var align = (
@@ -279,6 +280,20 @@ var turndownPluginGfm = (function (exports) {
             parentNode.firstChild === tr &&
             (parentNode.nodeName === 'TABLE' || parentNode.nodeName === 'TBODY')
         )
+    }
+
+    function hasTableHeading(tr) {
+        if (!tr || !tr.parentNode) return false;
+        var section = tr.parentNode;
+        var table = section.nodeName === 'TABLE' ? section : section.parentNode;
+        if (!table || table.nodeName !== 'TABLE') return false;
+
+        for (var i = 0; i < table.childNodes.length; i++) {
+            if (table.childNodes[i].nodeName === 'THEAD') {
+                return true
+            }
+        }
+        return false
     }
 
     function isFirstTbody(element) {
