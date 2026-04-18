@@ -414,45 +414,39 @@ class MarkdownParser:
                 
                 current_block = None
                 children = []
+                merged_text_elements = []
+                item_is_todo = False
+                item_is_checked = False
+                todo_checked = False
                 
                 j = i + 1
                 while j < len(tokens) and tokens[j].type != 'list_item_close':
                     sub_token = tokens[j]
                     
                     if sub_token.type == 'inline':
-                        # Found text content
                         text_elements = self._parse_inline(sub_token)
-                        
-                        # Check for Todo
-                        is_todo = False
-                        is_checked = False
-                        
-                        # Check first text element for [ ] or [x]
-                        if text_elements and text_elements[0].text_run:
-                            content = text_elements[0].text_run.content
-                            if content.startswith('[ ] ') or content.startswith('[x] '):
-                                is_todo = True
-                                is_checked = content.startswith('[x] ')
-                                # Remove the marker from content
-                                text_elements[0].text_run.content = content[4:]
-                        
-                        if is_todo:
-                            current_block = Block.builder() \
-                                .block_type(BlockType.TODO) \
-                                .todo(Text.builder()
-                                    .style(TextStyle.builder().done(is_checked).build())
-                                    .elements(text_elements)
-                                    .build()) \
-                                .build()
-                        else:
-                            current_block = Block.builder() \
-                                .block_type(list_type) \
-                                .build()
-                            
-                            if list_type == BlockType.BULLET:
-                                current_block.bullet = Text.builder().elements(text_elements).build()
-                            else:
-                                current_block.ordered = Text.builder().elements(text_elements).build()
+                        text_len = self._elements_text_len(text_elements)
+                        if text_len > 0:
+                            if not todo_checked and text_elements and text_elements[0].text_run:
+                                content = text_elements[0].text_run.content
+                                if content.startswith('[ ] ') or content.startswith('[x] '):
+                                    item_is_todo = True
+                                    item_is_checked = content.startswith('[x] ')
+                                    text_elements[0].text_run.content = content[4:]
+                                todo_checked = True
+
+                            # Preserve multi-paragraph list item content by merging all inline
+                            # tokens in order and inserting a newline between paragraphs.
+                            if merged_text_elements:
+                                merged_text_elements.append(
+                                    TextElement.builder()
+                                        .text_run(TextRun.builder()
+                                            .content("\n")
+                                            .text_element_style(TextElementStyle.builder().build())
+                                            .build())
+                                        .build()
+                                )
+                            merged_text_elements.extend(text_elements)
                                 
                     elif sub_token.type == 'bullet_list_open':
                         nested_blocks, new_j = self._parse_list(tokens, j, BlockType.BULLET)
@@ -465,11 +459,34 @@ class MarkdownParser:
                         j = new_j - 1
                         
                     j += 1
+
+                merged_text_len = self._elements_text_len(merged_text_elements)
+                if merged_text_len > 0:
+                    if item_is_todo:
+                        current_block = Block.builder() \
+                            .block_type(BlockType.TODO) \
+                            .todo(Text.builder()
+                                .style(TextStyle.builder().done(item_is_checked).build())
+                                .elements(merged_text_elements)
+                                .build()) \
+                            .build()
+                    else:
+                        current_block = Block.builder() \
+                            .block_type(list_type) \
+                            .build()
+                        if list_type == BlockType.BULLET:
+                            current_block.bullet = Text.builder().elements(merged_text_elements).build()
+                        else:
+                            current_block.ordered = Text.builder().elements(merged_text_elements).build()
                 
                 if current_block:
                     if children:
                         current_block.children = children
                     blocks.append(current_block)
+                elif children:
+                    # If parent list item text is empty, flatten nested children to avoid
+                    # generating invalid empty list items while preserving meaningful content.
+                    blocks.extend(children)
                 
                 i = j # Move main loop to list_item_close
                 
