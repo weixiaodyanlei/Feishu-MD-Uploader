@@ -33,7 +33,7 @@ def create_document(title: str, folder_token: str = None) -> str:
 
     return response.data.document.document_id
 
-def add_blocks(document_id: str, blocks: list, parent_id: str = None):
+def add_blocks(document_id: str, blocks: list, parent_id: str = None, insert_index: int = None):
     """
     Add blocks to the document or a specific parent block.
     Handles Table blocks by creating them empty first and then populating cells.
@@ -88,12 +88,14 @@ def add_blocks(document_id: str, blocks: list, parent_id: str = None):
     def flush_batch(batch):
         if not batch:
             return []
+        request_body_builder = CreateDocumentBlockChildrenRequestBody.builder() \
+            .children(batch)
+        if insert_index is not None:
+            request_body_builder.index(insert_index)
         request = CreateDocumentBlockChildrenRequest.builder() \
             .document_id(document_id) \
             .block_id(parent_id) \
-            .request_body(CreateDocumentBlockChildrenRequestBody.builder()
-                .children(batch)
-                .build()) \
+            .request_body(request_body_builder.build()) \
             .build()
         max_attempts = 5
         base_delay = 1.0
@@ -176,7 +178,7 @@ def add_blocks(document_id: str, blocks: list, parent_id: str = None):
                         # We want its children (the content)
                         cell_content = original_children[i].children
                         if cell_content:
-                            add_blocks(document_id, cell_content, parent_id=cell_id)
+                            add_blocks(document_id, cell_content, parent_id=cell_id, insert_index=0)
             
             elif original_children: # General Nested Block (e.g. List)
                 # Recursively add children to this block

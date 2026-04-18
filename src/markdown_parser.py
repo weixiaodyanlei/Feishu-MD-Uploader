@@ -52,6 +52,28 @@ class MarkdownParser:
             .text(text_builder.build()) \
             .build()
 
+    def _trim_edge_newlines(self, elements: list):
+        """
+        Trim leading/trailing newline-only TextRun elements.
+
+        This is mainly to avoid markdown-it table tokens introducing boundary
+        softbreaks that render as a blank line at the start/end of a cell.
+        """
+        if not elements:
+            return elements
+
+        def is_newline_el(el) -> bool:
+            tr = getattr(el, "text_run", None)
+            return bool(tr) and getattr(tr, "content", None) == "\n"
+
+        left = 0
+        right = len(elements) - 1
+        while left <= right and is_newline_el(elements[left]):
+            left += 1
+        while right >= left and is_newline_el(elements[right]):
+            right -= 1
+        return elements[left : right + 1]
+
     def parse(self, content: str) -> List[Block]:
         tokens = self.md.parse(content)
         blocks = []
@@ -352,7 +374,7 @@ class MarkdownParser:
             elif token.type == 'inline':
                 # Parse inline content as a Text Block for the cell
                 # Note: Cells can theoretically contain other blocks, but MD tables usually just have inline text
-                text_elements = self._parse_inline(token)
+                text_elements = self._trim_edge_newlines(self._parse_inline(token))
                 text_block = self._make_text_block(text_elements)
                 if text_block:
                     current_cell_blocks.append(text_block)
