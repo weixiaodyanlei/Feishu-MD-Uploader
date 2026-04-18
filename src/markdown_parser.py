@@ -52,28 +52,6 @@ class MarkdownParser:
             .text(text_builder.build()) \
             .build()
 
-    def _trim_edge_newlines(self, elements: list):
-        """
-        Trim leading/trailing newline-only TextRun elements.
-
-        This is mainly to avoid markdown-it table tokens introducing boundary
-        softbreaks that render as a blank line at the start/end of a cell.
-        """
-        if not elements:
-            return elements
-
-        def is_newline_el(el) -> bool:
-            tr = getattr(el, "text_run", None)
-            return bool(tr) and getattr(tr, "content", None) == "\n"
-
-        left = 0
-        right = len(elements) - 1
-        while left <= right and is_newline_el(elements[left]):
-            left += 1
-        while right >= left and is_newline_el(elements[right]):
-            right -= 1
-        return elements[left : right + 1]
-
     def parse(self, content: str) -> List[Block]:
         tokens = self.md.parse(content)
         blocks = []
@@ -132,38 +110,45 @@ class MarkdownParser:
                 # Handle Paragraph
                 if i + 1 < len(tokens) and tokens[i+1].type == 'inline':
                     inline_token = tokens[i + 1]
-                    
-                    # Check if this paragraph contains an image
-                    has_image = False
-                    image_token = None
-                    for child in inline_token.children:
-                        if child.type == 'image':
-                            has_image = True
-                            image_token = child
-                            break
-                    
+                    inline_children = inline_token.children or []
+                    has_image = any(child.type == 'image' for child in inline_children)
+
+                    # When inline text mixes with images, keep their relative order by
+                    # splitting the paragraph into text/image blocks.
                     if has_image and self.image_uploader and self.document_id:
-                        # Step 1: Create empty Image Block
-                        # We'll upload and update later
-                        src = image_token.attrs.get('src', '')
-                        # Create empty Image block
-                        src = image_token.attrs.get('src', '')
-                        block = Block.builder() \
-                            .block_type(BlockType.IMAGE) \
-                            .image(Image.builder().build()) \
-                            .build()
-                        blocks.append(block)
-                        
-                        # Record image info for later upload
-                        if not hasattr(self, '_pending_images'):
-                            self._pending_images = []
-                        self._pending_images.append({
-                            'block_index': len(blocks) - 1,
-                            'image_path': src,
-                            'alt': image_token.content if hasattr(image_token, 'content') else ''
-                        })
+                        text_children_buffer = []
+                        for child in inline_children:
+                            if child.type == 'image':
+                                if text_children_buffer:
+                                    text_elements = self._parse_inline_children(text_children_buffer)
+                                    text_block = self._make_text_block(text_elements)
+                                    if text_block:
+                                        blocks.append(text_block)
+                                    text_children_buffer = []
+
+                                src = child.attrs.get('src', '') if hasattr(child, 'attrs') and child.attrs else ''
+                                image_block = Block.builder() \
+                                    .block_type(BlockType.IMAGE) \
+                                    .image(Image.builder().build()) \
+                                    .build()
+                                blocks.append(image_block)
+
+                                if not hasattr(self, '_pending_images'):
+                                    self._pending_images = []
+                                self._pending_images.append({
+                                    'block_index': len(blocks) - 1,
+                                    'image_path': src,
+                                    'alt': child.content if hasattr(child, 'content') else ''
+                                })
+                            else:
+                                text_children_buffer.append(child)
+
+                        if text_children_buffer:
+                            text_elements = self._parse_inline_children(text_children_buffer)
+                            text_block = self._make_text_block(text_elements)
+                            if text_block:
+                                blocks.append(text_block)
                     else:
-                        # Regular Text Block
                         text_elements = self._parse_inline(inline_token)
                         block = self._make_text_block(text_elements)
                         if block:
@@ -374,7 +359,7 @@ class MarkdownParser:
             elif token.type == 'inline':
                 # Parse inline content as a Text Block for the cell
                 # Note: Cells can theoretically contain other blocks, but MD tables usually just have inline text
-                text_elements = self._trim_edge_newlines(self._parse_inline(token))
+                text_elements = self._parse_inline(token)
                 text_block = self._make_text_block(text_elements)
                 if text_block:
                     current_cell_blocks.append(text_block)
@@ -495,6 +480,9 @@ class MarkdownParser:
         return getattr(self, '_pending_images', [])
 
     def _parse_inline(self, token):
+        return self._parse_inline_children(token.children or [])
+
+    def _parse_inline_children(self, children):
         elements = []
         # Track active styles
         style_state = {
@@ -505,8 +493,8 @@ class MarkdownParser:
             'code': False
         }
         current_link_url = None
-        
-        for child in token.children:
+
+        for child in children:
             if child.type == 'text':
                 text_style_builder = TextElementStyle.builder() \
                     .bold(style_state['bold']) \
