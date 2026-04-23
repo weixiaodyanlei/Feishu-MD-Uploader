@@ -108,7 +108,7 @@ def main():
             
             for i in range(0, len(blocks), chunk_size):
                 chunk = blocks[i:i + chunk_size]
-                response_children = add_blocks(doc_token, chunk)
+                response_children = add_blocks(doc_token, chunk, debug=args.debug)
                 # Store block_ids for later image upload
                 for child in response_children:
                     block_id_map.append(child.block_id)

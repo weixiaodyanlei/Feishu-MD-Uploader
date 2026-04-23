@@ -6,6 +6,23 @@ from lark_oapi.api.docx.v1.model import *
 from lark_oapi.api.drive.v1.model import *
 from .auth import get_client
 
+def _to_serializable(obj):
+    """Convert SDK models/objects to JSON-serializable structures recursively."""
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, (list, tuple)):
+        return [_to_serializable(item) for item in obj]
+    if isinstance(obj, dict):
+        return {str(k): _to_serializable(v) for k, v in obj.items()}
+    if hasattr(obj, "__dict__"):
+        result = {}
+        for key, value in vars(obj).items():
+            if key.startswith("_") or callable(value):
+                continue
+            result[key] = _to_serializable(value)
+        return result
+    return str(obj)
+
 def create_document(title: str, folder_token: str = None) -> str:
     """
     Create a new Docx document.
@@ -33,7 +50,13 @@ def create_document(title: str, folder_token: str = None) -> str:
 
     return response.data.document.document_id
 
-def add_blocks(document_id: str, blocks: list, parent_id: str = None, insert_index: int = None):
+def add_blocks(
+    document_id: str,
+    blocks: list,
+    parent_id: str = None,
+    insert_index: int = None,
+    debug: bool = False
+):
     """
     Add blocks to the document or a specific parent block.
     Handles Table blocks by creating them empty first and then populating cells.
@@ -97,6 +120,14 @@ def add_blocks(document_id: str, blocks: list, parent_id: str = None, insert_ind
             .block_id(parent_id) \
             .request_body(request_body_builder.build()) \
             .build()
+        if debug:
+            request_payload = {
+                "document_id": document_id,
+                "block_id": parent_id,
+                "request_body": _to_serializable(request.request_body),
+            }
+            print("[DEBUG] Feishu add_blocks request payload:")
+            print(json.dumps(request_payload, ensure_ascii=False, indent=2))
         max_attempts = 5
         base_delay = 1.0
         retryable_codes = {429, 500, 502, 503, 504}
@@ -178,11 +209,22 @@ def add_blocks(document_id: str, blocks: list, parent_id: str = None, insert_ind
                         # We want its children (the content)
                         cell_content = original_children[i].children
                         if cell_content:
-                            add_blocks(document_id, cell_content, parent_id=cell_id, insert_index=0)
+                            add_blocks(
+                                document_id,
+                                cell_content,
+                                parent_id=cell_id,
+                                insert_index=0,
+                                debug=debug
+                            )
             
             elif original_children: # General Nested Block (e.g. List)
                 # Recursively add children to this block
-                add_blocks(document_id, original_children, parent_id=created_block.block_id)
+                add_blocks(
+                    document_id,
+                    original_children,
+                    parent_id=created_block.block_id,
+                    debug=debug
+                )
                 
         else:
             # No children, just add to batch
