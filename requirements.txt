@@ -1,5 +1,5 @@
 # Feishu Official SDK
-lark-oapi>=1.3.0
+lark-oapi>=1.5.5
 
 # HTTP Requests
 requests>=2.31.0

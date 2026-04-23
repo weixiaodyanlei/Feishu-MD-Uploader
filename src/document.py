@@ -1,10 +1,12 @@
 import json
 import random
 import time
+import requests
 import lark_oapi as lark
 from lark_oapi.api.docx.v1.model import *
 from lark_oapi.api.drive.v1.model import *
 from .auth import get_client
+from .config import Config
 
 def _to_serializable(obj):
     """Convert SDK models/objects to JSON-serializable structures recursively."""
@@ -65,6 +67,96 @@ def add_blocks(
         parent_id = document_id
         
     client = get_client()
+
+    def _get_tenant_access_token() -> str:
+        resp = requests.post(
+            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+            json={"app_id": Config.APP_ID, "app_secret": Config.APP_SECRET},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        if payload.get("code") != 0:
+            raise Exception(f"Failed to get tenant access token: {payload}")
+        return payload.get("tenant_access_token")
+
+    def _batch_insert_table_rows(document_id: str, table_block_id: str, row_count: int):
+        if row_count <= 0:
+            return
+        token = _get_tenant_access_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        # Important: batch_update does NOT allow duplicated block_id in one request.
+        # So we must insert one row per request for the same table block.
+        max_attempts = 5
+        base_delay = 1.0
+        retryable_http_codes = {429, 500, 502, 503, 504}
+        retryable_api_codes = {99991663}  # too many requests
+
+        for _ in range(row_count):
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    resp = requests.patch(
+                        f"https://open.feishu.cn/open-apis/docx/v1/documents/{document_id}/blocks/batch_update",
+                        headers=headers,
+                        json={
+                            "requests": [
+                                {"block_id": table_block_id, "insert_table_row": {"row_index": -1}}
+                            ]
+                        },
+                        timeout=30,
+                    )
+                except Exception as e:
+                    if attempt >= max_attempts:
+                        raise Exception(
+                            f"Failed to insert table row after {max_attempts} attempts: {e}"
+                        ) from e
+                    sleep_seconds = (base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
+                    time.sleep(sleep_seconds)
+                    continue
+
+                payload = {}
+                try:
+                    payload = resp.json()
+                except Exception:
+                    payload = {}
+
+                api_code = payload.get("code")
+                if resp.status_code < 400 and api_code == 0:
+                    break
+
+                if (
+                    attempt < max_attempts and
+                    (resp.status_code in retryable_http_codes or api_code in retryable_api_codes)
+                ):
+                    sleep_seconds = (base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
+                    time.sleep(sleep_seconds)
+                    continue
+
+                raise Exception(
+                    f"Failed to insert table row: http={resp.status_code}, "
+                    f"code={payload.get('code')}, msg={payload.get('msg')}, "
+                    f"error={payload.get('error')}"
+                )
+
+    def _get_table_cell_ids(document_id: str, table_block_id: str) -> list:
+        token = _get_tenant_access_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        resp = requests.get(
+            f"https://open.feishu.cn/open-apis/docx/v1/documents/{document_id}/blocks/{table_block_id}",
+            headers=headers,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        if payload.get("code") != 0:
+            raise Exception(
+                f"Failed to fetch table block: {payload.get('code')}, "
+                f"{payload.get('msg')}, {payload.get('error')}"
+            )
+        block = payload.get("data", {}).get("block", {})
+        table = block.get("table", {})
+        cells = table.get("cells", [])
+        return cells or []
 
     def _text_len(text_obj) -> int:
         if not text_obj or not getattr(text_obj, "elements", None):
@@ -169,6 +261,17 @@ def add_blocks(
     for block in blocks:
         # 1. Save children content
         original_children = block.children
+        table_requested_row_size = None
+        if (
+            block.block_type == 31 and
+            block.table and
+            block.table.property and
+            block.table.property.row_size
+        ):
+            table_requested_row_size = block.table.property.row_size
+            # Feishu create block API accepts at most 9 rows for table.
+            if table_requested_row_size > 9:
+                block.table.property.row_size = 9
         
         # 2. Clear children for creation (create empty block first)
         # Note: Feishu API doesn't support creating nested children directly in 'children' field for most blocks
@@ -201,7 +304,15 @@ def add_blocks(
                 if not created_block.table or not created_block.table.cells:
                     print("Warning: Created table has no cells")
                     continue
+
                 cell_ids = created_block.table.cells
+                if table_requested_row_size and table_requested_row_size > 9:
+                    extra_rows = table_requested_row_size - 9
+                    _batch_insert_table_rows(document_id, created_block.block_id, extra_rows)
+                    fetched_cell_ids = _get_table_cell_ids(document_id, created_block.block_id)
+                    if fetched_cell_ids:
+                        cell_ids = fetched_cell_ids
+
                 # Recursively add content to cells
                 for i, cell_id in enumerate(cell_ids):
                     if original_children and i < len(original_children):

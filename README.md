@@ -198,7 +198,7 @@ python src/uploader.py --debug my_article.md
    - 使用 tqdm 进度条显示上传进度
    - 适合日常使用
    
-   ```
+   ```plain
    🚀 Starting upload for 'My Document'...
    🔗 URL: https://www.feishu.cn/docx/xxxxxxxxxxxxx
    📤 Uploading content blocks...
@@ -216,7 +216,7 @@ python src/uploader.py --debug my_article.md
    - 包含 API 调用详情
    - 适合排查问题
    
-   ```
+   ```plain
    🚀 Starting upload for 'My Document'...
    Creating document...
    [DEBUG] POST https://open.feishu.cn/open-apis/docx/v1/documents...
@@ -250,7 +250,7 @@ options:
 
 程序执行成功后，将显示详细的上传过程和结果：
 
-```
+```plain
 🚀 Starting upload for 'My Document'...
 Creating document...
 ✅ Document created. Token: xxxxxxxxxxxxx
@@ -325,7 +325,7 @@ python batch_delete.py --all
 - *斜体*：`*text*` 或 `<i>text</i>`
 - ~~删除线~~：`~~text~~` 或 `<s>text</s>`
 - <u>下划线</u>：`<u>text</u>`
-- `行内代码`：`` `code` ``
+- `行内代码`：`code`
 
 #### 结构元素
 - 标题：H1-H9 (`#` 到 `#########`)
@@ -406,7 +406,7 @@ python batch_delete.py --all
 ## 📚 技术参考
 
 ### 项目结构
-```
+```plain
 Feishu-MD-Uploader/
 ├── src/
 │   ├── auth.py              # 飞书认证
