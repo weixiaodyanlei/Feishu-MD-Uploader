@@ -386,6 +386,7 @@ class MarkdownParser:
             .block_type(BlockType.TABLE) \
             .table(Table.builder()
                 .property(TableProperty.builder()
+                    .header_row(True)
                     .row_size(row_size)
                     .column_size(col_size)
                     .build())
