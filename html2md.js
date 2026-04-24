@@ -1636,7 +1636,7 @@ var TurndownService = (function () {
         let filename = `${title}.md`;
         const downloadLink = document.createElement('a');
         downloadLink.setAttribute('download', filename);
-        let markdownContent = `${markdown}\n\n本文转自 <${webUrl}>，如有侵权，请联系删除。`;
+        let markdownContent = `> 本文转自 <${webUrl}>，如有侵权，请联系删除。\n\n${markdown}`;
         //downloadLink.href = 'data:text/plain;charset=utf-8,' + encodeURIComponent(markdownContent);
         const blob = new Blob([markdownContent], { type: 'text/markdown;charset=utf-8' });
         let blobURL = URL.createObjectURL(blob);
