@@ -1,6 +1,8 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from markdown_it import MarkdownIt
 from lark_oapi.api.docx.v1.model import *
+
+from .markdown_hooks import apply_preprocess_hooks
 
 class BlockType:
     PAGE = 1
@@ -25,10 +27,16 @@ class BlockType:
     TODO = 17
 
 class MarkdownParser:
-    def __init__(self, image_uploader=None, document_id=None):
+    def __init__(
+        self,
+        image_uploader=None,
+        document_id=None,
+        source_type: Optional[int] = None,
+    ):
         self.md = MarkdownIt('commonmark', {'html': True}).enable(['table', 'strikethrough'])
         self.image_uploader = image_uploader
         self.document_id = document_id
+        self.source_type = source_type
 
     def _elements_text_len(self, elements) -> int:
         if not elements:
@@ -53,6 +61,7 @@ class MarkdownParser:
             .build()
 
     def parse(self, content: str) -> List[Block]:
+        content = apply_preprocess_hooks(content, self.source_type)
         tokens = self.md.parse(content)
         blocks = []
         
@@ -265,7 +274,9 @@ class MarkdownParser:
                 
                 if align_value and text_content:
                     # Parse the text_content as Markdown to support formatting
-                    inner_tokens = self.md.parse(text_content)
+                    inner_tokens = self.md.parse(
+                        apply_preprocess_hooks(text_content, self.source_type)
+                    )
                     text_elements = []
                     
                     for inner_token in inner_tokens:

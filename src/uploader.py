@@ -46,6 +46,17 @@ def main():
     parser.add_argument("--folder-token", help="Target Feishu folder token")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode (show all logs)")
     parser.add_argument("--env-file", help="Path to .env file")
+    parser.add_argument(
+        "--type",
+        type=int,
+        choices=[1, 2, 3],
+        default=1,
+        metavar="N",
+        help=(
+            "Markdown 来源类型（专属预处理）: "
+            "1=腾讯云开发者, 2=腾讯技术工程, 3=阿里云开发者 (默认: 1)"
+        ),
+    )
 
     args = parser.parse_args()
     
@@ -86,7 +97,7 @@ def main():
         if args.debug:
             print("Parsing Markdown...")
         image_uploader = ImageUploader(client)
-        md_parser = MarkdownParser(image_uploader, doc_token)
+        md_parser = MarkdownParser(image_uploader, doc_token, source_type=args.type)
         blocks = md_parser.parse(content)
         if args.debug:
             print(f"✅ Parsed {len(blocks)} blocks.")
