@@ -63,3 +63,6 @@ tmp/
 # Uploaded test images
 uploads/
 test_images/
+# AI Log Plugin 推荐忽略项
+.specstory/
+.ailog/
