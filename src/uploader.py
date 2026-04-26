@@ -4,6 +4,8 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
+
 import requests
 import tempfile
 import logging
@@ -23,6 +25,15 @@ try:
 except ImportError:
     TQDM_AVAILABLE = False
     tqdm = None
+
+# CDN 等对 Python-requests 默认 UA 不友好；大图下载需更长超时
+_IMAGE_DOWNLOAD_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+}
 
 def setup_logging(debug=False):
     """Setup logging configuration"""
@@ -131,12 +142,29 @@ def upload_one_markdown(
                     if debug:
                         print(f"   - Downloading image: {image_path}")
                     try:
-                        response = requests.get(image_path, stream=True, timeout=10)
+                        response = requests.get(
+                            image_path,
+                            stream=True,
+                            timeout=60,
+                            headers=_IMAGE_DOWNLOAD_HEADERS,
+                        )
                         response.raise_for_status()
 
-                        suffix = os.path.splitext(image_path)[1]
-                        if not suffix or len(suffix) > 5 or "?" in suffix:
-                            suffix = ".png"
+                        path_part = urlparse(image_path).path
+                        suffix = os.path.splitext(path_part)[1].lower()
+                        allowed = (
+                            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".tif", ".tiff",
+                        )
+                        if suffix not in allowed:
+                            ct = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                            if "webp" in ct:
+                                suffix = ".webp"
+                            elif "jpeg" in ct or "jpg" in ct:
+                                suffix = ".jpg"
+                            elif "png" in ct:
+                                suffix = ".png"
+                            else:
+                                suffix = ".webp"
 
                         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                             for chunk in response.iter_content(chunk_size=8192):

@@ -48,6 +48,15 @@ class MarkdownParser:
                 total += len(tr.content)
         return total
 
+    def _is_whitespace_only_elements(self, text_elements) -> bool:
+        """True if inline elements have no visible text (e.g. only spaces before an image)."""
+        parts = []
+        for el in text_elements or []:
+            tr = getattr(el, "text_run", None)
+            if tr and getattr(tr, "content", None) is not None:
+                parts.append(tr.content)
+        return not "".join(parts).strip()
+
     def _make_text_block(self, text_elements, align: int = None):
         """Create a TEXT block only when it has non-empty content."""
         if self._elements_text_len(text_elements) == 0:
@@ -130,9 +139,10 @@ class MarkdownParser:
                             if child.type == 'image':
                                 if text_children_buffer:
                                     text_elements = self._parse_inline_children(text_children_buffer)
-                                    text_block = self._make_text_block(text_elements)
-                                    if text_block:
-                                        blocks.append(text_block)
+                                    if not self._is_whitespace_only_elements(text_elements):
+                                        text_block = self._make_text_block(text_elements)
+                                        if text_block:
+                                            blocks.append(text_block)
                                     text_children_buffer = []
 
                                 src = child.attrs.get('src', '') if hasattr(child, 'attrs') and child.attrs else ''
@@ -154,9 +164,10 @@ class MarkdownParser:
 
                         if text_children_buffer:
                             text_elements = self._parse_inline_children(text_children_buffer)
-                            text_block = self._make_text_block(text_elements)
-                            if text_block:
-                                blocks.append(text_block)
+                            if not self._is_whitespace_only_elements(text_elements):
+                                text_block = self._make_text_block(text_elements)
+                                if text_block:
+                                    blocks.append(text_block)
                     else:
                         text_elements = self._parse_inline(inline_token)
                         block = self._make_text_block(text_elements)

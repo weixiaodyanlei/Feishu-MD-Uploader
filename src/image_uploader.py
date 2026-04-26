@@ -2,7 +2,8 @@ import os
 import lark_oapi
 from lark_oapi.api.drive.v1 import *
 from lark_oapi.api.docx.v1 import *
-from src.auth import get_client
+
+from .image_utils import read_image_pixel_size
 
 class ImageUploader:
     def __init__(self, client: lark_oapi.Client):
@@ -47,7 +48,15 @@ class ImageUploader:
 
         file_token = response.data.file_token
         print(f"   Got file_token: {file_token[:20]}...")
-        
+
+        # Feishu: if replace_image omits width/height and server cannot read pixels from file,
+        # it falls back to 100×100px — images look tiny with empty-looking frame below.
+        dims = read_image_pixel_size(file_path)
+        replace_builder = ReplaceImageRequest.builder().token(file_token)
+        if dims:
+            w, h = dims
+            replace_builder.width(w).height(h)
+
         # Step 3: Update the Image Block with the file_token
         update_request = BatchUpdateDocumentBlockRequest.builder() \
             .document_id(document_id) \
@@ -55,9 +64,7 @@ class ImageUploader:
                 .requests([
                     UpdateBlockRequest.builder()
                         .block_id(block_id)
-                        .replace_image(ReplaceImageRequest.builder()
-                            .token(file_token)
-                            .build())
+                        .replace_image(replace_builder.build())
                         .build()
                 ])
                 .build()) \
