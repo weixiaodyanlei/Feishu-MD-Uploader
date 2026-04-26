@@ -23,6 +23,20 @@ SOURCE_TYPE_NAMES = {
 }
 
 
+# Footer line like: 来源  |  阿里云开发者公众号 (spaces may be ASCII or NBSP, | may be fullwidth ｜)
+_ALIYUN_SOURCE_FOOTER_PATTERN = re.compile(
+    r"来源[\s\u00a0]*[|｜][\s\u00a0]*阿里云开发者公众号",
+)
+
+
+def _hook_aliyun_strip_source_footer(markdown: str) -> str:
+    """Remove the Aliyun source footer and everything after it."""
+    m = _ALIYUN_SOURCE_FOOTER_PATTERN.search(markdown)
+    if not m:
+        return markdown
+    return markdown[: m.start()].rstrip()
+
+
 def _hook_tencent_tech_engine_headings(markdown: str) -> str:
     """
     Map ATX headings per line: ##### -> ###, #### -> ##, ### -> #.
@@ -47,4 +61,6 @@ def apply_preprocess_hooks(markdown: str, source_type: Optional[int]) -> str:
         return markdown
     if source_type == SOURCE_TENCENT_TECH_ENGINEERING:
         return _hook_tencent_tech_engine_headings(markdown)
+    if source_type == SOURCE_ALIYUN_DEVELOPER:
+        return _hook_aliyun_strip_source_footer(markdown)
     return markdown
