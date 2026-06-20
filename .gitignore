@@ -63,3 +63,4 @@ tmp/
 # Uploaded test images
 uploads/
 test_images/
+dir/**
