@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         下载CSDN、简书、掘金、博客园、微信公众号、知乎专栏、脚本之家、51CTO、程序员大本营、吾爱破解、B站、思否、轻识、腾讯云、阿里云、华为云等文章保存为Word/Markdown文件
 // @namespace    https://waahah.xyz/
-// @version      0.2.11
+// @version      0.2.12
 // @description  下载保存博客文章为markdown/word,已支持CSDN、简书、掘金、知乎专栏、博客园、微信公众号、脚本之家、51CTO、程序员大本营、吾爱破解、腾讯云、阿里云、华为云、B站专栏、思否、轻识、百家号、百度经验、360个人图书馆、码农教程等，脚本仅限学习，请大家尊重版权。
 // @author       waahah
 // @require      https://unpkg.com/html-docx-js/dist/html-docx.js
@@ -73,7 +73,11 @@ function getCodeBlockText(node) {
             walk(current.childNodes[i]);
         }
 
-        if (codeLineContainerRegExp.test(current.nodeName)) {
+        if (
+            codeLineContainerRegExp.test(current.nodeName) ||
+            (current.nodeName === 'SPAN' &&
+                /\blade-preview-line\b/.test(current.className || ''))
+        ) {
             appendLineBreak();
         }
     }
@@ -125,6 +129,13 @@ function getCodeFenceLanguage(pre, firstCode) {
         var m2 = pre.className.match(/(?:^|\s)code-snippet__(\w+)(?:\s|$)/);
         if (m2) lang = m2[1];
     }
+    if (!lang && pre && pre.closest) {
+        var lakeBlock = pre.closest('.lake-codeblock');
+        if (lakeBlock && lakeBlock.className) {
+            var m3 = lakeBlock.className.match(/(?:^|\s)lake-codeblock-(\w+)(?:\s|$)/);
+            if (m3 && m3[1] && m3[1] !== 'plain') lang = m3[1];
+        }
+    }
     return lang;
 }
 
@@ -134,6 +145,56 @@ function preContainsDirectCode(pre) {
         if (pre.childNodes[i].nodeName === 'CODE') return true;
     }
     return false;
+}
+
+/** 语雀/Lake/CodeMirror：PRE 内为 span 分行，无直接子 code */
+function preIsLakeOrCodeMirrorBlock(pre) {
+    if (!pre || pre.nodeName !== 'PRE') return false;
+    var cls = pre.className || '';
+    if (/\bcm-s-\w+\b/.test(cls)) return true;
+    if (pre.querySelector && pre.querySelector('.lake-preview-line')) return true;
+    if (pre.closest && pre.closest('.lake-codeblock')) return true;
+    return false;
+}
+
+function preIsCodeFenceCandidate(pre) {
+    return preContainsDirectCode(pre) || preIsLakeOrCodeMirrorBlock(pre);
+}
+
+/** 阿里云等：data-card-value="data:%7B%22code%22%3A...%7D" */
+function parseLakeCodeblockDataCard(value) {
+    if (!value || typeof value !== 'string') return null;
+    var raw = value.trim();
+    if (raw.indexOf('data:') !== 0) return null;
+    try {
+        var jsonStr = decodeURIComponent(raw.slice(5));
+        var payload = JSON.parse(jsonStr);
+        if (!payload || typeof payload.code !== 'string') return null;
+        return {
+            code: payload.code.replace(/\r\n?/g, '\n'),
+            mode: typeof payload.mode === 'string' ? payload.mode : ''
+        };
+    } catch (e) {
+        return null;
+    }
+}
+
+function markdownFenceForCode(code, lang, fenceChar) {
+    fenceChar = (fenceChar && fenceChar.charAt(0)) || '`';
+    var fenceSize = 3;
+    var fenceInCodeRegex = new RegExp('^' + fenceChar + '{3,}', 'gm');
+    var match;
+    while ((match = fenceInCodeRegex.exec(code))) {
+        if (match[0].length >= fenceSize) fenceSize = match[0].length + 1;
+    }
+    var fence = '';
+    for (var r = 0; r < fenceSize; r++) fence += fenceChar;
+    var langPart = lang && lang !== 'plain' ? lang : '';
+    return (
+        '\n\n' + fence + langPart + '\n' +
+        String(code).replace(/\n$/, '') +
+        '\n' + fence + '\n\n'
+    );
 }
 
 var turndownPluginGfm = (function (exports) {
@@ -516,7 +577,7 @@ var TurndownService = (function () {
         filter: function (node, options) {
             return (
                 options.codeBlockStyle === 'indented' &&
-                preContainsDirectCode(node)
+                preIsCodeFenceCandidate(node)
             )
         },
 
@@ -533,7 +594,7 @@ var TurndownService = (function () {
         filter: function (node, options) {
             return (
                 options.codeBlockStyle === 'fenced' &&
-                preContainsDirectCode(node)
+                preIsCodeFenceCandidate(node)
             )
         },
 
@@ -1630,6 +1691,36 @@ var TurndownService = (function () {
         const gfm = turndownPluginGfm.gfm;
         turndownService.use(gfm);
         turndownService.remove('style');
+        turndownService.addRule('lakeCodeblockCard', {
+            filter: function (node) {
+                return (
+                    node.nodeName === 'DIV' &&
+                    (node.getAttribute('data-lake-card') || '').toLowerCase() ===
+                        'codeblock'
+                );
+            },
+            replacement: function (content, node, options) {
+                var parsed = parseLakeCodeblockDataCard(
+                    node.getAttribute('data-card-value') || ''
+                );
+                var code = '';
+                var lang = '';
+                if (parsed) {
+                    code = parsed.code;
+                    if (parsed.mode && parsed.mode !== 'plain') lang = parsed.mode;
+                }
+                if (!code && node.querySelector) {
+                    var pre = node.querySelector('pre');
+                    if (pre) {
+                        code = getPreCodeBlockText(pre).replace(/\n$/, '');
+                        lang =
+                            getCodeFenceLanguage(pre, null) ||
+                            lang;
+                    }
+                }
+                return markdownFenceForCode(code, lang, options.fence);
+            }
+        });
         let ele = document.querySelector(el);
         let markdown = turndownService.turndown(ele);
         //console.log(markdown);
