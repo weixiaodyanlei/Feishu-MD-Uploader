@@ -1636,7 +1636,47 @@ var TurndownService = (function () {
         let filename = `${title}.md`;
         const downloadLink = document.createElement('a');
         downloadLink.setAttribute('download', filename);
-        let markdownContent = `> 本文转自 <${webUrl}>，如有侵权，请联系删除。\n\n${markdown}`;
+
+        // 获取时间和作者信息
+        let time = '';
+        let author = '';
+
+        // 微信公众号特殊处理
+        if (host.includes('mp.weixin.qq.com')) {
+            // 获取发布时间 - 从指定ID的元素获取
+            const timeElement = document.querySelector('#publish_time');
+            if (timeElement) {
+                time = timeElement.textContent.trim();
+            }
+
+            // 获取作者信息 - 从rich_media_meta_nickname元素获取公众号名称
+            const authorElement = document.querySelector('.rich_media_meta.rich_media_meta_nickname');
+            if (authorElement) {
+                const authorLink = authorElement.querySelector('#js_name');
+                if (authorLink) {
+                    author = authorLink.textContent.trim();
+                } else {
+                    author = authorElement.textContent.trim();
+                }
+            }
+
+            // 如果没有找到，尝试其他可能的元素
+            if (!time) {
+                const timeElement2 = document.querySelector('.rich_media_meta.rich_media_meta_text');
+                if (timeElement2) {
+                    time = timeElement2.textContent.trim();
+                }
+            }
+
+            if (!author) {
+                const authorElement2 = document.querySelector('.rich_media_meta.rich_media_meta_text');
+                if (authorElement2) {
+                    author = authorElement2.textContent.trim();
+                }
+            }
+        }
+
+        let markdownContent = `> 本文转自 <${webUrl}>，发布时间：${time}，公众号：${author}，如有侵权，请联系删除。\n\n${markdown}`;
         //downloadLink.href = 'data:text/plain;charset=utf-8,' + encodeURIComponent(markdownContent);
         const blob = new Blob([markdownContent], { type: 'text/markdown;charset=utf-8' });
         let blobURL = URL.createObjectURL(blob);
