@@ -232,6 +232,67 @@ def add_blocks(
                 f"error={payload.get('error')}"
             )
 
+    def _batch_delete_cell_placeholders(document_id: str, delete_jobs: list):
+        """Delete placeholder child blocks from multiple table cells in one API request."""
+        if not delete_jobs:
+            return
+        token = _get_tenant_access_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        requests = []
+        for cell_id, old_count in delete_jobs:
+            requests.append(
+                {
+                    "block_id": cell_id,
+                    "remove_child_blocks": {"start_index": 0, "end_index": old_count},
+                }
+            )
+
+        max_attempts = 5
+        base_delay = 1.0
+        retryable_http_codes = {429, 500, 502, 503, 504}
+        retryable_api_codes = {99991663}
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = requests.patch(
+                    f"https://open.feishu.cn/open-apis/docx/v1/documents/{document_id}/blocks/batch_update",
+                    headers=headers,
+                    json={"requests": requests},
+                    timeout=30,
+                )
+            except Exception as e:
+                if attempt >= max_attempts:
+                    raise Exception(
+                        f"Failed to batch delete cell placeholders after {max_attempts} attempts: {e}"
+                    ) from e
+                sleep_seconds = (base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
+                time.sleep(sleep_seconds)
+                continue
+
+            payload = {}
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = {}
+
+            api_code = payload.get("code")
+            if resp.status_code < 400 and api_code == 0:
+                return
+
+            if (
+                attempt < max_attempts
+                and (resp.status_code in retryable_http_codes or api_code in retryable_api_codes)
+            ):
+                sleep_seconds = (base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
+                time.sleep(sleep_seconds)
+                continue
+
+            raise Exception(
+                f"Failed to batch delete cell placeholders: http={resp.status_code}, "
+                f"code={payload.get('code')}, msg={payload.get('msg')}"
+            )
+
     def _text_len(text_obj) -> int:
         if not text_obj or not getattr(text_obj, "elements", None):
             return 0
@@ -391,14 +452,26 @@ def add_blocks(
                 # Feishu children/batch_delete is one parent per request — cannot merge cells
                 # into a single HTTP call; deferring deletes avoids per-cell add+delete RTT churn.
                 cell_delete_jobs = []
+                _verified_placeholder = False
                 for i, cell_id in enumerate(cell_ids):
                     if original_children and i < len(original_children):
-                        # original_children[i] is a TableCell block (32)
                         cell_content = original_children[i].children
                         if cell_content:
-                            pre_child_ids = _get_block_children_ids(document_id, cell_id)
-                            old_count = len(pre_child_ids)
-                            # Append new blocks after Feishu defaults, then delete prefix [0, old_count).
+                            # Feishu 新创建的空白单元格固定有 1 个空 Text 占位符
+                            old_count = 1
+
+                            # Debug mode: verify this assumption once per table
+                            if debug and not _verified_placeholder:
+                                actual_ids = _get_block_children_ids(document_id, cell_id)
+                                actual_count = len(actual_ids)
+                                if actual_count != old_count:
+                                    print(
+                                        f"[WARN] 单元格占位符数量异常: table={created_block.block_id}, "
+                                        f"cell={cell_id}, expected={old_count}, actual={actual_count}"
+                                    )
+                                _verified_placeholder = True
+
+                            # Append new blocks after Feishu defaults
                             created_in_cell = add_blocks(
                                 document_id,
                                 cell_content,
@@ -407,13 +480,8 @@ def add_blocks(
                             )
                             if old_count > 0 and len(created_in_cell or []) > 0:
                                 cell_delete_jobs.append((cell_id, old_count))
-                for cell_id, old_count in cell_delete_jobs:
-                    _batch_delete_block_children_range(
-                        document_id,
-                        cell_id,
-                        start_index=0,
-                        end_index=old_count,
-                    )
+                # Single batch_update call for all cells
+                _batch_delete_cell_placeholders(document_id, cell_delete_jobs)
             
             elif original_children: # General Nested Block (e.g. List)
                 # Recursively add children to this block
