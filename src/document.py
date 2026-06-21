@@ -456,13 +456,24 @@ def add_blocks(
         return summary
     
     # Helper to flush a batch of regular blocks
+    MAX_BATCH_SIZE = 50  # Feishu API limits children to 50 per request
+
     def flush_batch(batch):
         if not batch:
             return []
+        all_created = []
+        for chunk_start in range(0, len(batch), MAX_BATCH_SIZE):
+            chunk = batch[chunk_start:chunk_start + MAX_BATCH_SIZE]
+            created = _flush_chunk(chunk, chunk_start)
+            all_created.extend(created)
+        return all_created
+
+    def _flush_chunk(chunk, offset=0):
+        """Send a single chunk (≤50 blocks) to the Feishu API."""
         request_body_builder = CreateDocumentBlockChildrenRequestBody.builder() \
-            .children(batch)
+            .children(chunk)
         if insert_index is not None:
-            request_body_builder.index(insert_index)
+            request_body_builder.index(insert_index + offset)
         request = CreateDocumentBlockChildrenRequest.builder() \
             .document_id(document_id) \
             .block_id(parent_id) \
@@ -502,7 +513,7 @@ def add_blocks(
                 time.sleep(sleep_seconds)
                 continue
 
-            debug_batch = [_block_summary(b) for b in batch]
+            debug_batch = [_block_summary(b) for b in chunk]
             raise Exception(
                 f"Failed to add blocks: {response.code}, {response.msg}, {response.error}. "
                 f"Batch summary: {json.dumps(debug_batch, ensure_ascii=False)}"
