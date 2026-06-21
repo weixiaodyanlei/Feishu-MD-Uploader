@@ -6,6 +6,9 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+import random
+import time
+
 import requests
 import tempfile
 import logging
@@ -115,9 +118,16 @@ def _upload_image_and_update_block(
         if debug:
             print(f"   - Uploading image: {os.path.basename(image_path)} to block")
         image_uploader = ImageUploader(client)
-        success = image_uploader.upload_and_update_image(
-            image_path, doc_token, block_id
-        )
+        upload_success = False
+        for attempt in range(1, 4):
+            if attempt > 1:
+                time.sleep((1.0 * (2 ** (attempt - 2))) + random.uniform(0, 0.5))
+            upload_success = image_uploader.upload_and_update_image(
+                image_path, doc_token, block_id
+            )
+            if upload_success:
+                break
+        success = upload_success
         if debug:
             if success:
                 print("     ✅ Image uploaded and set")
@@ -179,9 +189,9 @@ def upload_one_markdown(
 
         if TQDM_AVAILABLE and not debug:
             print("📤 Uploading content blocks...")
-            pbar = tqdm(total=total_chunks, desc="Blocks", unit="chunk", ncols=80)
+            blocks_pbar = tqdm(total=total_chunks, desc="Blocks", unit="chunk", ncols=80)
         else:
-            pbar = None
+            blocks_pbar = None
             if debug:
                 print("Uploading content blocks...")
 
@@ -191,13 +201,13 @@ def upload_one_markdown(
             for child in response_children:
                 block_id_map.append(child.block_id)
 
-            if pbar:
-                pbar.update(1)
+            if blocks_pbar:
+                blocks_pbar.update(1)
             elif debug:
                 print(f"   - Uploaded blocks {i+1} to {min(i+chunk_size, len(blocks))}")
 
-        if pbar:
-            pbar.close()
+        if blocks_pbar:
+            blocks_pbar.close()
             print("✅ Content uploaded.")
         elif debug:
             print("✅ Content uploaded.")
@@ -209,9 +219,9 @@ def upload_one_markdown(
 
             if TQDM_AVAILABLE and not debug:
                 print(f"🖼️  Uploading {len(pending_images)} images (3 concurrent)...")
-                pbar = tqdm(total=len(pending_images), desc="Images", unit="img", ncols=80)
+                img_pbar = tqdm(total=len(pending_images), desc="Images", unit="img", ncols=80)
             else:
-                pbar = None
+                img_pbar = None
                 if debug:
                     print(f"Uploading {len(pending_images)} images (3 concurrent)...")
 
@@ -240,11 +250,11 @@ def upload_one_markdown(
                         if debug:
                             img_info = futures[future]
                             print(f"     ❌ Image upload failed: {img_info.get('image_path', '?')} — {e}")
-                    if pbar:
-                        pbar.update(1)
+                    if img_pbar:
+                        img_pbar.update(1)
 
-            if pbar:
-                pbar.close()
+            if img_pbar:
+                img_pbar.close()
             msg = "✅ Images processed."
             if fail_count:
                 msg += f" ({success_count} success, {fail_count} failed)"

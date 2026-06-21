@@ -48,10 +48,6 @@ def create_document(title: str, folder_token: str = None) -> str:
 
     return response.data.document.document_id
 
-    return response.data.document.document_id
-
-    return response.data.document.document_id
-
 def add_blocks(
     document_id: str,
     blocks: list,
@@ -233,65 +229,68 @@ def add_blocks(
             )
 
     def _batch_delete_cell_placeholders(document_id: str, delete_jobs: list):
-        """Delete placeholder child blocks from multiple table cells in one API request."""
+        """Delete placeholder child blocks from multiple table cells in one or more batch_update requests."""
         if not delete_jobs:
             return
         token = _get_tenant_access_token()
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-        delete_requests = []
-        for cell_id, old_count in delete_jobs:
-            delete_requests.append(
-                {
-                    "block_id": cell_id,
-                    "remove_child_blocks": {"start_index": 0, "end_index": old_count},
-                }
-            )
-
-        max_attempts = 5
-        base_delay = 1.0
-        retryable_http_codes = {429, 500, 502, 503, 504}
-        retryable_api_codes = {99991663}
-
-        for attempt in range(1, max_attempts + 1):
-            try:
-                resp = requests.patch(
-                    f"https://open.feishu.cn/open-apis/docx/v1/documents/{document_id}/blocks/batch_update",
-                    headers=headers,
-                    json={"requests": delete_requests},
-                    timeout=30,
+        CHUNK_SIZE = 50
+        for chunk_start in range(0, len(delete_jobs), CHUNK_SIZE):
+            chunk = delete_jobs[chunk_start : chunk_start + CHUNK_SIZE]
+            requests_list = []
+            for cell_id, old_count in chunk:
+                requests_list.append(
+                    {
+                        "block_id": cell_id,
+                        "remove_child_blocks": {"start_index": 0, "end_index": old_count},
+                    }
                 )
-            except Exception as e:
-                if attempt >= max_attempts:
-                    raise Exception(
-                        f"Failed to batch delete cell placeholders after {max_attempts} attempts: {e}"
-                    ) from e
-                sleep_seconds = (base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
-                time.sleep(sleep_seconds)
-                continue
 
-            payload = {}
-            try:
-                payload = resp.json()
-            except Exception:
+            max_attempts = 5
+            base_delay = 1.0
+            retryable_http_codes = {429, 500, 502, 503, 504}
+            retryable_api_codes = {99991663}
+
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    resp = requests.patch(
+                        f"https://open.feishu.cn/open-apis/docx/v1/documents/{document_id}/blocks/batch_update",
+                        headers=headers,
+                        json={"requests": requests_list},
+                        timeout=30,
+                    )
+                except Exception as e:
+                    if attempt >= max_attempts:
+                        raise Exception(
+                            f"Failed to batch delete cell placeholders after {max_attempts} attempts: {e}"
+                        ) from e
+                    sleep_seconds = (base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
+                    time.sleep(sleep_seconds)
+                    continue
+
                 payload = {}
+                try:
+                    payload = resp.json()
+                except Exception:
+                    payload = {}
 
-            api_code = payload.get("code")
-            if resp.status_code < 400 and api_code == 0:
-                return
+                api_code = payload.get("code")
+                if resp.status_code < 400 and api_code == 0:
+                    break  # This chunk done, move to next
 
-            if (
-                attempt < max_attempts
-                and (resp.status_code in retryable_http_codes or api_code in retryable_api_codes)
-            ):
-                sleep_seconds = (base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
-                time.sleep(sleep_seconds)
-                continue
+                if (
+                    attempt < max_attempts
+                    and (resp.status_code in retryable_http_codes or api_code in retryable_api_codes)
+                ):
+                    sleep_seconds = (base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
+                    time.sleep(sleep_seconds)
+                    continue
 
-            raise Exception(
-                f"Failed to batch delete cell placeholders: http={resp.status_code}, "
-                f"code={payload.get('code')}, msg={payload.get('msg')}"
-            )
+                raise Exception(
+                    f"Failed to batch delete cell placeholders: http={resp.status_code}, "
+                    f"code={payload.get('code')}, msg={payload.get('msg')}"
+                )
 
     def _text_len(text_obj) -> int:
         if not text_obj or not getattr(text_obj, "elements", None):
@@ -405,7 +404,7 @@ def add_blocks(
             block.table.property.row_size
         ):
             table_requested_row_size = block.table.property.row_size
-            column_size = block.table.property.column_size
+            column_size = getattr(block.table.property, 'column_size', None)
             # 不再限制为 9 行——API 可能已支持更多行数
             # 如果创建后 cell 数量不够，会触发 fallback 插入行
         
