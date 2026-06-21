@@ -317,10 +317,44 @@ def add_blocks(
                 })
                 complex_cell_indices.append(i)
 
+        def _calc_column_widths(cell_contents_list, col_size):
+            """Calculate proportional column widths based on content length.
+
+            Each column gets width proportional to its max content length,
+            scaled to fit a typical document content width (~800 units).
+            """
+            if not cell_contents_list or col_size <= 0:
+                return []
+            n_rows = len(cell_contents_list) // col_size
+            if n_rows == 0:
+                return [100] * col_size
+            per_col_max = [0] * col_size
+            for i, cell_block in enumerate(cell_contents_list):
+                col_idx = i % col_size
+                cell_content = cell_block.children if cell_block else []
+                max_len = 0
+                for b in cell_content:
+                    if _is_text_block(b):
+                        text_obj = getattr(b, 'text', None)
+                        if text_obj and getattr(text_obj, 'elements', None):
+                            for el in text_obj.elements:
+                                tr = getattr(el, 'text_run', None)
+                                if tr:
+                                    max_len = max(max_len, len(getattr(tr, 'content', '') or ''))
+                per_col_max[col_idx] = max(per_col_max[col_idx], max_len)
+            raw = [min(max(l * 10, 60), 300) for l in per_col_max]
+            total = sum(raw)
+            if total <= 800:
+                return raw
+            return [max(int(w * 800 / total), 40) for w in raw]
+
         # Build table property
         table_prop = {"row_size": row_size, "column_size": column_size}
         if header_row:
             table_prop["header_row"] = True
+        column_widths = _calc_column_widths(cell_contents_list, column_size)
+        if column_widths:
+            table_prop["column_width"] = column_widths
 
         table_descendant = {
             "block_id": tid,
