@@ -397,6 +397,7 @@ def add_blocks(
         # 1. Save children content
         original_children = block.children
         table_requested_row_size = None
+        column_size = None
         if (
             block.block_type == 31 and
             block.table and
@@ -404,9 +405,9 @@ def add_blocks(
             block.table.property.row_size
         ):
             table_requested_row_size = block.table.property.row_size
-            # Feishu create block API accepts at most 9 rows for table.
-            if table_requested_row_size > 9:
-                block.table.property.row_size = 9
+            column_size = block.table.property.column_size
+            # 不再限制为 9 行——API 可能已支持更多行数
+            # 如果创建后 cell 数量不够，会触发 fallback 插入行
         
         # 2. Clear children for creation (create empty block first)
         # Note: Feishu API doesn't support creating nested children directly in 'children' field for most blocks
@@ -441,12 +442,22 @@ def add_blocks(
                     continue
 
                 cell_ids = created_block.table.cells
-                if table_requested_row_size and table_requested_row_size > 9:
-                    extra_rows = table_requested_row_size - 9
-                    _batch_insert_table_rows(document_id, created_block.block_id, extra_rows)
-                    fetched_cell_ids = _get_table_cell_ids(document_id, created_block.block_id)
-                    if fetched_cell_ids:
-                        cell_ids = fetched_cell_ids
+
+                # 动态计算：如果 API 创建了全部行，跳过插入；否则 fallback 插入额外行
+                if table_requested_row_size and column_size:
+                    expected_cell_count = table_requested_row_size * column_size
+                    actual_cell_count = len(cell_ids)
+                    if actual_cell_count < expected_cell_count:
+                        extra_rows = (expected_cell_count - actual_cell_count) // column_size
+                        if extra_rows > 0:
+                            _batch_insert_table_rows(
+                                document_id, created_block.block_id, extra_rows
+                            )
+                            fetched_cell_ids = _get_table_cell_ids(
+                                document_id, created_block.block_id
+                            )
+                            if fetched_cell_ids:
+                                cell_ids = fetched_cell_ids
 
                 # Recursively add content to cells, then strip placeholders in one phase.
                 # Feishu children/batch_delete is one parent per request — cannot merge cells
