@@ -228,6 +228,158 @@ def add_blocks(
                 f"error={payload.get('error')}"
             )
 
+    def _is_text_block(block) -> bool:
+        """Check if block is a TEXT block with simple content (no nested children)."""
+        return getattr(block, 'block_type', None) == 2 and not getattr(block, 'children', None)
+
+    def _create_table_via_descendant(
+        document_id: str, parent_block_id: str, table_block,
+        cell_contents_list: list, row_size: int, column_size: int, debug: bool,
+    ):
+        """
+        Create a table with pre-populated content via the descendant API.
+        Simple-text cells are pre-populated inline; complex cells get an
+        empty placeholder (caller must handle append+delete for those).
+
+        Returns (created_table_block, complex_cell_indices) on success.
+        Raises on failure.
+        """
+        import random
+
+        token = _get_tenant_access_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        tid = f"_dt_{random.randint(100000, 999999)}"
+        header_row = False
+        if table_block.table and table_block.table.property:
+            header_row = getattr(table_block.table.property, 'header_row', False)
+
+        descendants = []
+        cell_temp_ids = []
+        complex_cell_indices = []
+        max_attempts = 5
+        base_delay = 1.0
+        retryable_codes = {429, 500, 502, 503, 504}
+        retryable_api_codes = {99991663}
+
+        for i, cell_block in enumerate(cell_contents_list):
+            cell_content = cell_block.children if cell_block else []
+            cell_tid = f"{tid}_c{i}"
+            cell_temp_ids.append(cell_tid)
+
+            if not cell_content:
+                # Empty cell: empty Text placeholder
+                placeholder_tid = f"{cell_tid}_p"
+                descendants.append({
+                    "block_id": cell_tid, "block_type": 32,
+                    "table_cell": {}, "children": [placeholder_tid],
+                })
+                descendants.append({
+                    "block_id": placeholder_tid, "block_type": 2,
+                    "text": {"elements": [{"text_run": {"content": ""}}]},
+                    "children": [],
+                })
+            elif all(_is_text_block(b) for b in cell_content):
+                # Simple text: pre-populate inline
+                text_tids = []
+                for j, tb in enumerate(cell_content):
+                    txt_id = f"{cell_tid}_t{j}"
+                    text_tids.append(txt_id)
+                    text_obj = getattr(tb, 'text', None)
+                    elements = []
+                    if text_obj and getattr(text_obj, 'elements', None):
+                        for el in text_obj.elements:
+                            tr = getattr(el, 'text_run', None)
+                            if tr:
+                                elements.append({
+                                    "text_run": {"content": getattr(tr, 'content', '') or ''}
+                                })
+                    descendants.append({
+                        "block_id": txt_id, "block_type": 2,
+                        "text": {"elements": elements},
+                        "children": [],
+                    })
+                descendants.append({
+                    "block_id": cell_tid, "block_type": 32,
+                    "table_cell": {}, "children": text_tids,
+                })
+            else:
+                # Complex content: cell with empty placeholder, caller handles later
+                placeholder_tid = f"{cell_tid}_p"
+                descendants.append({
+                    "block_id": cell_tid, "block_type": 32,
+                    "table_cell": {}, "children": [placeholder_tid],
+                })
+                descendants.append({
+                    "block_id": placeholder_tid, "block_type": 2,
+                    "text": {"elements": [{"text_run": {"content": ""}}]},
+                    "children": [],
+                })
+                complex_cell_indices.append(i)
+
+        # Build table property
+        table_prop = {"row_size": row_size, "column_size": column_size}
+        if header_row:
+            table_prop["header_row"] = True
+
+        table_descendant = {
+            "block_id": tid,
+            "block_type": 31,
+            "table": {"property": table_prop},
+            "children": cell_temp_ids,
+        }
+
+        body = {
+            "children_id": [tid],
+            "descendants": [table_descendant] + descendants,
+        }
+
+        if debug:
+            print("[DEBUG] Descendant table request:")
+            print(json.dumps(body, ensure_ascii=False, indent=2)[:2000])
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = requests.post(
+                    f"https://open.feishu.cn/open-apis/docx/v1/documents/{document_id}/blocks/{parent_block_id}/descendant",
+                    headers=headers,
+                    json=body,
+                    timeout=30,
+                )
+            except Exception as e:
+                if attempt >= max_attempts:
+                    raise
+                sleep_seconds = (base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
+                time.sleep(sleep_seconds)
+                continue
+
+            payload = resp.json()
+            api_code = payload.get("code")
+            if resp.status_code < 400 and api_code == 0:
+                data = payload.get("data", {})
+                children_data = data.get("children", [])
+                if not children_data:
+                    raise Exception("Descendant API returned no children data")
+                # Reconstruct Block via SDK's dict-based init
+                from lark_oapi.api.docx.v1.model.block import Block
+                created_block = Block(d=children_data[0])
+                return created_block, complex_cell_indices
+
+            if (
+                attempt < max_attempts
+                and (resp.status_code in retryable_codes or api_code in retryable_api_codes)
+            ):
+                sleep_seconds = (base_delay * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
+                time.sleep(sleep_seconds)
+                continue
+
+            raise Exception(
+                f"Descendant table creation failed: http={resp.status_code}, "
+                f"code={api_code}, msg={payload.get('msg')}"
+            )
+
+        raise Exception("Descendant table creation failed: max attempts reached")
+
     def _text_len(text_obj) -> int:
         if not text_obj or not getattr(text_obj, "elements", None):
             return 0
@@ -344,41 +496,75 @@ def add_blocks(
             # 不再限制为 9 行——API 可能已支持更多行数
             # 如果创建后 cell 数量不够，会触发 fallback 插入行
         
-        # 2. Clear children for creation (create empty block first)
-        # Note: Feishu API doesn't support creating nested children directly in 'children' field for most blocks
-        block.children = None
-        
-        # 3. Create Block
-        # Flush current batch if we need to handle this block individually (e.g. Table or block with children)
-        # Actually, if we strip children, we can batch create them?
-        # Yes, but we need to map the created block back to its original children to populate them.
-        # So we must create them one by one or maintain a mapping.
-        # Simplest approach: Flush batch, create this block, populate children.
-        
-        if original_children or block.block_type == 31: # Has children or is Table
-            # Flush current batch first
+        # For TABLE blocks: try descendant API first (pre-populate content,
+        # avoids creating empty cells + per-cell placeholder deletion).
+        if block.block_type == 31:
             if current_batch:
                 all_created_children.extend(flush_batch(current_batch))
                 current_batch = []
-                
-            # Create this block
+
+            try:
+                created_block, complex_cell_indices = _create_table_via_descendant(
+                    document_id, parent_id or document_id, block,
+                    original_children or [],
+                    table_requested_row_size or 1,
+                    column_size or 1,
+                    debug,
+                )
+                all_created_children.append(created_block)
+
+                # For complex cells (lists, images, etc.) that got an empty
+                # placeholder, fall back to append-content + delete-placeholder.
+                if complex_cell_indices and created_block.table and created_block.table.cells:
+                    cell_ids = created_block.table.cells
+                    cell_delete_jobs = []
+                    for idx in complex_cell_indices:
+                        if idx < len(cell_ids) and idx < len(original_children) and original_children[idx]:
+                            cell_block = original_children[idx]
+                            cell_content = cell_block.children if hasattr(cell_block, 'children') else None
+                            if cell_content:
+                                created_in_cell = add_blocks(
+                                    document_id, cell_content,
+                                    parent_id=cell_ids[idx], debug=debug,
+                                )
+                                if created_in_cell:
+                                    cell_delete_jobs.append((cell_ids[idx], 1))
+                    for cid, oc in cell_delete_jobs:
+                        _batch_delete_block_children_range(
+                            document_id, cid, start_index=0, end_index=oc,
+                        )
+                continue
+            except Exception as e:
+                if debug:
+                    print(f"[DEBUG] Descendant table creation failed, falling back: {e}")
+                # Fall through to flush_batch approach below
+
+        # 2. Clear children for creation (create empty block first)
+        block.children = None
+
+        # 3. Create Block (flush_batch for non-TABLE blocks or TABLE fallback)
+        if original_children or block.block_type == 31:
+            if current_batch:
+                all_created_children.extend(flush_batch(current_batch))
+                current_batch = []
+
             created_blocks = flush_batch([block])
             all_created_children.extend(created_blocks)
-            
+
             if not created_blocks:
                 continue
-                
+
             created_block = created_blocks[0]
-            
+
             # 4. Handle Children
-            if block.block_type == 31: # Table Special Handling
+            if block.block_type == 31: # Table fallback (descendant failed)
                 if not created_block.table or not created_block.table.cells:
                     print("Warning: Created table has no cells")
                     continue
 
                 cell_ids = created_block.table.cells
 
-                # 动态计算：如果 API 创建了全部行，跳过插入；否则 fallback 插入额外行
+                # Insert extra rows if API didn't create enough cells
                 if table_requested_row_size and column_size:
                     expected_cell_count = table_requested_row_size * column_size
                     actual_cell_count = len(cell_ids)
@@ -394,19 +580,13 @@ def add_blocks(
                             if fetched_cell_ids:
                                 cell_ids = fetched_cell_ids
 
-                # Recursively add content to cells, then strip placeholders in one phase.
-                # Feishu children/batch_delete is one parent per request — cannot merge cells
-                # into a single HTTP call; deferring deletes avoids per-cell add+delete RTT churn.
                 cell_delete_jobs = []
                 _verified_placeholder = False
                 for i, cell_id in enumerate(cell_ids):
                     if original_children and i < len(original_children):
                         cell_content = original_children[i].children
                         if cell_content:
-                            # Feishu 新创建的空白单元格固定有 1 个空 Text 占位符
                             old_count = 1
-
-                            # Debug mode: verify this assumption once per table
                             if debug and not _verified_placeholder:
                                 actual_ids = _get_block_children_ids(document_id, cell_id)
                                 actual_count = len(actual_ids)
@@ -416,35 +596,23 @@ def add_blocks(
                                         f"cell={cell_id}, expected={old_count}, actual={actual_count}"
                                     )
                                 _verified_placeholder = True
-
-                            # Append new blocks after Feishu defaults
                             created_in_cell = add_blocks(
-                                document_id,
-                                cell_content,
-                                parent_id=cell_id,
-                                debug=debug,
+                                document_id, cell_content,
+                                parent_id=cell_id, debug=debug,
                             )
                             if old_count > 0 and len(created_in_cell or []) > 0:
                                 cell_delete_jobs.append((cell_id, old_count))
-                # Delete placeholder in each cell. batch_update does not support
-                # remove_child_blocks, so we must call the DELETE endpoint per cell.
                 for cell_id, old_count in cell_delete_jobs:
                     _batch_delete_block_children_range(
-                        document_id,
-                        cell_id,
-                        start_index=0,
-                        end_index=old_count,
+                        document_id, cell_id, start_index=0, end_index=old_count,
                     )
-            
+
             elif original_children: # General Nested Block (e.g. List)
-                # Recursively add children to this block
                 add_blocks(
-                    document_id,
-                    original_children,
-                    parent_id=created_block.block_id,
-                    debug=debug
+                    document_id, original_children,
+                    parent_id=created_block.block_id, debug=debug,
                 )
-                
+
         else:
             # No children, just add to batch
             current_batch.append(block)
