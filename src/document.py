@@ -239,9 +239,9 @@ def add_blocks(
         token = _get_tenant_access_token()
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-        requests = []
+        delete_requests = []
         for cell_id, old_count in delete_jobs:
-            requests.append(
+            delete_requests.append(
                 {
                     "block_id": cell_id,
                     "remove_child_blocks": {"start_index": 0, "end_index": old_count},
@@ -258,7 +258,7 @@ def add_blocks(
                 resp = requests.patch(
                     f"https://open.feishu.cn/open-apis/docx/v1/documents/{document_id}/blocks/batch_update",
                     headers=headers,
-                    json={"requests": requests},
+                    json={"requests": delete_requests},
                     timeout=30,
                 )
             except Exception as e:
