@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import requests
 import tempfile
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Add src to path so we can import modules if running directly
 sys.path.append(str(Path(__file__).parent.parent))
@@ -53,6 +54,84 @@ def setup_logging(debug=False):
         logging.getLogger('lark_oapi').setLevel(logging.WARNING)
 
 
+def _upload_image_and_update_block(
+    img_info: dict,
+    markdown_dir: str,
+    client,
+    doc_token: str,
+    block_id_map: list,
+    debug: bool = False,
+) -> bool:
+    """Download (if URL) a single image and upload it to its block. Returns True on success."""
+    block_index = img_info["block_index"]
+    image_path = img_info["image_path"]
+    temp_file_path = None
+
+    if image_path.startswith(("http://", "https://")):
+        if debug:
+            print(f"   - Downloading image: {image_path}")
+        try:
+            response = requests.get(
+                image_path,
+                stream=True,
+                timeout=60,
+                headers=_IMAGE_DOWNLOAD_HEADERS,
+            )
+            response.raise_for_status()
+
+            path_part = urlparse(image_path).path
+            suffix = os.path.splitext(path_part)[1].lower()
+            allowed = (
+                ".png", ".jpg", ".jpeg", ".gif", ".webp",
+                ".bmp", ".heic", ".tif", ".tiff",
+            )
+            if suffix not in allowed:
+                ct = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                if "webp" in ct:
+                    suffix = ".webp"
+                elif "jpeg" in ct or "jpg" in ct:
+                    suffix = ".jpg"
+                elif "png" in ct:
+                    suffix = ".png"
+                else:
+                    suffix = ".webp"
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                for chunk in response.iter_content(chunk_size=8192):
+                    tmp.write(chunk)
+                temp_file_path = tmp.name
+                image_path = temp_file_path
+
+        except Exception as e:
+            if debug:
+                print(f"     ❌ Failed to download image: {e}")
+            return False
+    else:
+        if not os.path.isabs(image_path):
+            image_path = os.path.join(markdown_dir, image_path)
+
+    if block_index < len(block_id_map):
+        block_id = block_id_map[block_index]
+        if debug:
+            print(f"   - Uploading image: {os.path.basename(image_path)} to block")
+        image_uploader = ImageUploader(client)
+        success = image_uploader.upload_and_update_image(
+            image_path, doc_token, block_id
+        )
+        if debug:
+            if success:
+                print("     ✅ Image uploaded and set")
+            else:
+                print("     ❌ Failed to upload image")
+    else:
+        success = False
+
+    if temp_file_path and os.path.exists(temp_file_path):
+        os.remove(temp_file_path)
+
+    return success
+
+
 def upload_one_markdown(
     md_path: Path,
     *,
@@ -94,7 +173,7 @@ def upload_one_markdown(
         print(f"✅ Parsed {len(blocks)} blocks.")
 
     if blocks:
-        chunk_size = 50
+        chunk_size = 100
         block_id_map = []
         total_chunks = (len(blocks) + chunk_size - 1) // chunk_size
 
@@ -125,87 +204,51 @@ def upload_one_markdown(
 
         pending_images = md_parser.get_pending_images()
         if pending_images:
+            success_count = 0
+            fail_count = 0
+
             if TQDM_AVAILABLE and not debug:
-                print(f"🖼️  Uploading {len(pending_images)} images...")
-                img_pbar = tqdm(total=len(pending_images), desc="Images", unit="img", ncols=80)
+                print(f"🖼️  Uploading {len(pending_images)} images (3 concurrent)...")
+                pbar = tqdm(total=len(pending_images), desc="Images", unit="img", ncols=80)
             else:
-                img_pbar = None
+                pbar = None
                 if debug:
-                    print(f"Uploading {len(pending_images)} images...")
+                    print(f"Uploading {len(pending_images)} images (3 concurrent)...")
 
-            for img_info in pending_images:
-                block_index = img_info["block_index"]
-                image_path = img_info["image_path"]
-                temp_file_path = None
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = {
+                    executor.submit(
+                        _upload_image_and_update_block,
+                        img_info,
+                        markdown_dir,
+                        client,
+                        doc_token,
+                        block_id_map,
+                        debug,
+                    ): img_info
+                    for img_info in pending_images
+                }
 
-                if image_path.startswith(("http://", "https://")):
-                    if debug:
-                        print(f"   - Downloading image: {image_path}")
+                for future in as_completed(futures):
                     try:
-                        response = requests.get(
-                            image_path,
-                            stream=True,
-                            timeout=60,
-                            headers=_IMAGE_DOWNLOAD_HEADERS,
-                        )
-                        response.raise_for_status()
-
-                        path_part = urlparse(image_path).path
-                        suffix = os.path.splitext(path_part)[1].lower()
-                        allowed = (
-                            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".tif", ".tiff",
-                        )
-                        if suffix not in allowed:
-                            ct = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-                            if "webp" in ct:
-                                suffix = ".webp"
-                            elif "jpeg" in ct or "jpg" in ct:
-                                suffix = ".jpg"
-                            elif "png" in ct:
-                                suffix = ".png"
-                            else:
-                                suffix = ".webp"
-
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                            for chunk in response.iter_content(chunk_size=8192):
-                                tmp.write(chunk)
-                            temp_file_path = tmp.name
-                            image_path = temp_file_path
-
-                    except Exception as e:
-                        if debug:
-                            print(f"     ❌ Failed to download image: {e}")
-                        if img_pbar:
-                            img_pbar.update(1)
-                        continue
-                else:
-                    if not os.path.isabs(image_path):
-                        image_path = os.path.join(markdown_dir, image_path)
-
-                if block_index < len(block_id_map):
-                    block_id = block_id_map[block_index]
-                    if debug:
-                        print(f"   - Uploading image: {os.path.basename(image_path)} to block")
-                    success = image_uploader.upload_and_update_image(
-                        image_path, doc_token, block_id
-                    )
-                    if debug:
-                        if success:
-                            print("     ✅ Image uploaded and set")
+                        if future.result():
+                            success_count += 1
                         else:
-                            print("     ❌ Failed to upload image")
+                            fail_count += 1
+                    except Exception as e:
+                        fail_count += 1
+                        if debug:
+                            img_info = futures[future]
+                            print(f"     ❌ Image upload failed: {img_info.get('image_path', '?')} — {e}")
+                    if pbar:
+                        pbar.update(1)
 
-                if temp_file_path and os.path.exists(temp_file_path):
-                    os.remove(temp_file_path)
-
-                if img_pbar:
-                    img_pbar.update(1)
-
-            if img_pbar:
-                img_pbar.close()
-                print("✅ Images processed.")
-            elif debug:
-                print("✅ Images processed.")
+            if pbar:
+                pbar.close()
+            msg = "✅ Images processed."
+            if fail_count:
+                msg += f" ({success_count} success, {fail_count} failed)"
+            print(msg)
 
     if debug:
         print("Setting permissions...")
