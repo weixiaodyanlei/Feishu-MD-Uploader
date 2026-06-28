@@ -1,10 +1,13 @@
-from src.pdf.models import TextBlock
+from src.pdf.models import LinkAnnotation, TextBlock
 from src.pdf.typora_profile import (
+    apply_links_to_blocks,
     build_heading_size_map,
     detect_body_size,
     is_monospace_font,
     map_heading_level,
+    match_link_to_text,
     merge_code_blocks,
+    rects_overlap,
 )
 
 
@@ -64,6 +67,53 @@ def test_merge_code_blocks_allows_one_blank_gap():
     groups = merge_code_blocks(blocks)
     assert len(groups) == 1
     assert [b.text for b in groups[0]] == ["a", "", "b"]
+
+
+def test_rects_overlap_detects_intersection():
+    assert rects_overlap((0, 0, 10, 10), (5, 5, 15, 15)) is True
+    assert rects_overlap((0, 0, 10, 10), (20, 20, 30, 30)) is False
+
+
+def test_match_link_to_text_finds_overlapping_block():
+    blocks = [
+        TextBlock(
+            text="click here",
+            font="Arial",
+            size=11.0,
+            flags=0,
+            page_index=0,
+            x0=10,
+            y0=10,
+            x1=80,
+            y1=20,
+        )
+    ]
+    link = LinkAnnotation(
+        uri="https://example.com",
+        page_index=0,
+        x0=12,
+        y0=11,
+        x1=70,
+        y1=19,
+    )
+    assert match_link_to_text(link, blocks) == "click here"
+
+
+def test_apply_links_to_blocks_rewrites_markdown_link():
+    block = TextBlock(
+        text="docs",
+        font="Arial",
+        size=11.0,
+        flags=0,
+        page_index=0,
+        x0=0,
+        y0=0,
+        x1=40,
+        y1=10,
+    )
+    link = LinkAnnotation(uri="https://docs.example.com", page_index=0, x0=1, y0=1, x1=39, y1=9)
+    updated = apply_links_to_blocks([block], [link])
+    assert updated[0].text == "[docs](https://docs.example.com)"
 
 
 def test_is_monospace_font_matches_common_names():
