@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import logging
+import re
 from collections import Counter
 
-from src.pdf.models import LinkAnnotation, TextBlock
+from src.pdf.models import ElementKind, ExtractedDocument, LinkAnnotation, MdElement, TextBlock
+
+logger = logging.getLogger(__name__)
+
+_LIST_UNORDERED = re.compile(r"^[-*+•]\s")
+_LIST_ORDERED = re.compile(r"^\d+\.\s")
 
 _MONOSPACE_KEYWORDS = (
     "consolas",
@@ -149,3 +156,76 @@ def apply_links_to_blocks(
             )
         result.append(block)
     return result
+
+
+def _sort_key_page_y_x(page_index: int, y0: float, x0: float) -> tuple[int, float, float]:
+    return (page_index, y0, x0)
+
+
+def classify_document(doc: ExtractedDocument, *, debug: bool = False) -> list[MdElement]:
+    blocks = apply_links_to_blocks(doc.blocks, doc.links)
+    body_size = detect_body_size(blocks)
+    heading_sizes = build_heading_size_map(blocks, body_size)
+
+    if debug:
+        logger.debug("body_size=%s heading_sizes=%s", body_size, heading_sizes)
+
+    elements: list[tuple[tuple[int, float, float], MdElement]] = []
+    i = 0
+    while i < len(blocks):
+        block = blocks[i]
+        if not block.text.strip() and not is_monospace_font(block.font):
+            i += 1
+            continue
+
+        if is_monospace_font(block.font):
+            group = [block]
+            j = i + 1
+            blank_gap = 0
+            while j < len(blocks):
+                nxt = blocks[j]
+                if is_monospace_font(nxt.font):
+                    group.append(nxt)
+                    blank_gap = 0
+                    j += 1
+                    continue
+                if not nxt.text.strip() and blank_gap < 1:
+                    group.append(nxt)
+                    blank_gap += 1
+                    j += 1
+                    continue
+                break
+            code_text = "\n".join(b.text for b in group).strip("\n")
+            key = _sort_key_page_y_x(block.page_index, block.y0, block.x0)
+            elements.append((key, MdElement(kind=ElementKind.CODE, content=code_text)))
+            i = j
+            continue
+
+        level = map_heading_level(block.size, block.font, body_size, heading_sizes)
+        if level is not None:
+            key = _sort_key_page_y_x(block.page_index, block.y0, block.x0)
+            elements.append((key, MdElement(kind=ElementKind.HEADING, content=block.text.strip(), level=level)))
+            i += 1
+            continue
+
+        text = block.text.strip()
+        key = _sort_key_page_y_x(block.page_index, block.y0, block.x0)
+        elements.append((key, MdElement(kind=ElementKind.PARAGRAPH, content=text)))
+        i += 1
+
+    for image in doc.images:
+        filename = f"image_{image.image_index:03d}.{image.ext}"
+        key = _sort_key_page_y_x(image.page_index, image.y0, image.x0)
+        elements.append(
+            (
+                key,
+                MdElement(
+                    kind=ElementKind.IMAGE,
+                    content=filename,
+                    image_ref=None,
+                ),
+            )
+        )
+
+    elements.sort(key=lambda item: item[0])
+    return [element for _, element in elements]
