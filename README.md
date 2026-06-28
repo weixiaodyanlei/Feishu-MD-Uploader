@@ -119,6 +119,26 @@ FOLDER_TOKEN=""
 
 ## 🚀 使用方法 (Usage)
 
+### 0. PDF 转 Markdown（可选预处理）
+
+若原始资料为 Typora / MarkText 导出的文本型 PDF，可先转为 Markdown 再上传：
+
+```bash
+# 基本转换（输出同目录 article.md + article_assets/）
+python pdf_to_md.py path/to/article.pdf
+
+# 指定输出路径与图片目录
+python pdf_to_md.py path/to/article.pdf -o path/to/article.md --assets-dir article_assets
+
+# 转换完成后上传飞书
+python src/uploader.py path/to/article.md --title "文章标题"
+```
+
+**说明：**
+- 仅支持文本型 PDF（Typora 导出）；扫描件不支持
+- 优先还原标题、代码块、链接、图片；列表尽力识别
+- 加密 PDF 不支持
+
 ### 1. 准备 Markdown 文件
 
 确保您的 Markdown 文件中的图片引用是**本地有效路径**或**可访问的 URL**，例如：
