@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from src.pdf.extractor import merge_spans_to_blocks
+from src.pdf.extractor import merge_adjacent_line_blocks, merge_spans_to_blocks
 from src.pdf.models import ElementKind, ExtractedDocument, ExtractedImage, LinkAnnotation, MdElement, TextBlock
 from src.pdf.typora_profile import (
     apply_links_to_blocks,
@@ -166,6 +166,23 @@ def test_merge_spans_to_blocks_combines_same_line_spans():
     assert len(blocks) == 1
     assert blocks[0].text == "Hello World"
     assert blocks[0].size == 11.0
+
+
+def test_merge_adjacent_line_blocks_combines_paragraph_lines():
+    blocks = [
+        TextBlock("Hello", "Arial", 11.0, 0, 0, 0, 0, 10, 10),
+        TextBlock("world.", "Arial", 11.0, 0, 0, 0, 12, 10, 22),
+    ]
+    merged = merge_adjacent_line_blocks(blocks)
+    assert len(merged) == 1
+    assert merged[0].text == "Hello world."
+
+
+def test_apply_links_to_blocks_falls_back_to_bare_url():
+    block = TextBlock("body", "Arial", 11.0, 0, 0, 0, 0, 10, 10)
+    link = LinkAnnotation("https://orphan.example.com", 0, 100, 100, 110, 110)
+    updated = apply_links_to_blocks([block], [link])
+    assert updated[-1].text == "https://orphan.example.com"
 
 
 def test_classify_document_orders_heading_code_paragraph_and_image():

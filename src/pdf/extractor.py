@@ -58,6 +58,37 @@ def merge_spans_to_blocks(page_dict: dict, page_index: int) -> list[TextBlock]:
     return blocks
 
 
+def merge_adjacent_line_blocks(blocks: list[TextBlock], *, line_gap_threshold: float = 8.0) -> list[TextBlock]:
+    """Merge consecutive lines with the same font/size into one paragraph block."""
+    if not blocks:
+        return []
+
+    merged: list[TextBlock] = [blocks[0]]
+    for block in blocks[1:]:
+        prev = merged[-1]
+        same_style = (
+            prev.page_index == block.page_index
+            and prev.font == block.font
+            and abs(prev.size - block.size) < 0.01
+        )
+        vertical_gap = block.y0 - prev.y1
+        if same_style and 0 <= vertical_gap <= line_gap_threshold:
+            merged[-1] = TextBlock(
+                text=f"{prev.text} {block.text}".strip(),
+                font=prev.font,
+                size=prev.size,
+                flags=prev.flags,
+                page_index=prev.page_index,
+                x0=min(prev.x0, block.x0),
+                y0=prev.y0,
+                x1=max(prev.x1, block.x1),
+                y1=block.y1,
+            )
+        else:
+            merged.append(block)
+    return merged
+
+
 def _extract_links(page: fitz.Page, page_index: int) -> list[LinkAnnotation]:
     links: list[LinkAnnotation] = []
     for link in page.get_links():
@@ -96,7 +127,8 @@ def extract_pdf(pdf_path: Path) -> ExtractedDocument:
         for page_index in range(len(doc)):
             page = doc[page_index]
             page_dict = page.get_text("dict")
-            extracted.blocks.extend(merge_spans_to_blocks(page_dict, page_index))
+            line_blocks = merge_spans_to_blocks(page_dict, page_index)
+            extracted.blocks.extend(merge_adjacent_line_blocks(line_blocks))
             extracted.links.extend(_extract_links(page, page_index))
 
             for img in page.get_images(full=True):

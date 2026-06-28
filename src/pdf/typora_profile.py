@@ -130,9 +130,11 @@ def apply_links_to_blocks(
         return blocks
 
     linked_text_by_id: dict[int, str] = {}
+    unmatched_links: list[LinkAnnotation] = []
     for link in links:
         matched = match_link_to_text(link, blocks)
         if matched is None:
+            unmatched_links.append(link)
             continue
         for idx, block in enumerate(blocks):
             if block.page_index == link.page_index and block.text.strip() == matched:
@@ -155,6 +157,22 @@ def apply_links_to_blocks(
                 y1=block.y1,
             )
         result.append(block)
+
+    for link in unmatched_links:
+        result.append(
+            TextBlock(
+                text=link.uri,
+                font="",
+                size=0.0,
+                flags=0,
+                page_index=link.page_index,
+                x0=link.x0,
+                y0=link.y0,
+                x1=link.x1,
+                y1=link.y1,
+            )
+        )
+    result.sort(key=lambda b: (b.page_index, b.y0, b.x0))
     return result
 
 
