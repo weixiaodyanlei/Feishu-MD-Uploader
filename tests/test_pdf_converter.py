@@ -42,6 +42,30 @@ def test_map_heading_level_maps_largest_three_sizes():
     assert map_heading_level(11.0, "Consolas", body, heading_sizes) is None
 
 
+def test_merge_code_blocks_groups_consecutive_monospace():
+    blocks = [
+        _block(10.0, font="Consolas", text="line1"),
+        _block(10.0, font="Consolas", text="line2"),
+        _block(11.0, font="Arial", text="paragraph"),
+        _block(10.0, font="Menlo", text="code2"),
+    ]
+    groups = merge_code_blocks(blocks)
+    assert len(groups) == 2
+    assert [b.text for b in groups[0]] == ["line1", "line2"]
+    assert [b.text for b in groups[1]] == ["code2"]
+
+
+def test_merge_code_blocks_allows_one_blank_gap():
+    blocks = [
+        _block(10.0, font="Consolas", text="a"),
+        TextBlock("", "Consolas", 10.0, 0, 0, 0, 0, 10, 10),
+        _block(10.0, font="Consolas", text="b"),
+    ]
+    groups = merge_code_blocks(blocks)
+    assert len(groups) == 1
+    assert [b.text for b in groups[0]] == ["a", "", "b"]
+
+
 def test_is_monospace_font_matches_common_names():
     assert is_monospace_font("Consolas") is True
     assert is_monospace_font("Courier New") is True

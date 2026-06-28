@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from src.pdf.models import TextBlock
+from src.pdf.models import LinkAnnotation, TextBlock
 
 _MONOSPACE_KEYWORDS = (
     "consolas",
