@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import os
+import re
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -13,6 +16,15 @@ import requests
 import tempfile
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Windows 终端默认使用 GBK 编码，直接 print 表情符号（🚀/✅/❌ 等）会抛出
+# UnicodeEncodeError 导致整个程序崩溃；改为 UTF-8 并对无法编码的字符做替换。
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
 
 # Add src to path so we can import modules if running directly
 sys.path.append(str(Path(__file__).parent.parent))
@@ -38,6 +50,16 @@ _IMAGE_DOWNLOAD_HEADERS = {
     ),
     "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
 }
+
+# 部分公众号文章的懒加载占位图会以 data URI 的形式内联在 Markdown 中
+_DATA_URI_RE = re.compile(r"^data:image/([a-zA-Z0-9.+-]+);base64,(.+)$", re.DOTALL)
+_MIME_SUFFIX_MAP = {
+    "png": ".png", "jpeg": ".jpg", "jpg": ".jpg", "gif": ".gif",
+    "webp": ".webp", "bmp": ".bmp", "svg+xml": ".svg",
+}
+
+# 下载远程图片时偶发被 CDN（如微信 mmbiz.qpic.cn）主动重置连接，需重试
+_DOWNLOAD_MAX_ATTEMPTS = 3
 
 def setup_logging(debug=False):
     """Setup logging configuration"""
@@ -70,44 +92,75 @@ def _upload_image_and_update_block(
     image_path = img_info["image_path"]
     temp_file_path = None
 
-    if image_path.startswith(("http://", "https://")):
+    data_uri_match = _DATA_URI_RE.match(image_path) if image_path.startswith("data:") else None
+
+    if data_uri_match:
         if debug:
-            print(f"   - Downloading image: {image_path}")
+            print(f"   - Decoding inline base64 image ({data_uri_match.group(1)})")
         try:
-            response = requests.get(
-                image_path,
-                stream=True,
-                timeout=60,
-                headers=_IMAGE_DOWNLOAD_HEADERS,
-            )
-            response.raise_for_status()
-
-            path_part = urlparse(image_path).path
-            suffix = os.path.splitext(path_part)[1].lower()
-            allowed = (
-                ".png", ".jpg", ".jpeg", ".gif", ".webp",
-                ".bmp", ".heic", ".tif", ".tiff",
-            )
-            if suffix not in allowed:
-                ct = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-                if "webp" in ct:
-                    suffix = ".webp"
-                elif "jpeg" in ct or "jpg" in ct:
-                    suffix = ".jpg"
-                elif "png" in ct:
-                    suffix = ".png"
-                else:
-                    suffix = ".webp"
-
+            suffix = _MIME_SUFFIX_MAP.get(data_uri_match.group(1).lower(), ".png")
+            raw = base64.b64decode(data_uri_match.group(2), validate=False)
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                for chunk in response.iter_content(chunk_size=8192):
-                    tmp.write(chunk)
+                tmp.write(raw)
                 temp_file_path = tmp.name
                 image_path = temp_file_path
-
-        except Exception as e:
+        except (binascii.Error, ValueError) as e:
             if debug:
-                print(f"     ❌ Failed to download image: {e}")
+                print(f"     ❌ Failed to decode inline base64 image: {e}")
+            return False
+    elif image_path.startswith(("http://", "https://")):
+        if debug:
+            print(f"   - Downloading image: {image_path}")
+
+        last_error = None
+        for attempt in range(1, _DOWNLOAD_MAX_ATTEMPTS + 1):
+            if attempt > 1:
+                time.sleep((1.0 * (2 ** (attempt - 2))) + random.uniform(0, 0.5))
+            try:
+                response = requests.get(
+                    image_path,
+                    stream=True,
+                    timeout=60,
+                    headers=_IMAGE_DOWNLOAD_HEADERS,
+                )
+                response.raise_for_status()
+
+                path_part = urlparse(image_path).path
+                suffix = os.path.splitext(path_part)[1].lower()
+                allowed = (
+                    ".png", ".jpg", ".jpeg", ".gif", ".webp",
+                    ".bmp", ".heic", ".tif", ".tiff",
+                )
+                if suffix not in allowed:
+                    ct = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                    if "webp" in ct:
+                        suffix = ".webp"
+                    elif "jpeg" in ct or "jpg" in ct:
+                        suffix = ".jpg"
+                    elif "png" in ct:
+                        suffix = ".png"
+                    else:
+                        suffix = ".webp"
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        tmp.write(chunk)
+                    temp_file_path = tmp.name
+                    image_path = temp_file_path
+                last_error = None
+                break
+
+            except Exception as e:
+                last_error = e
+                if temp_file_path and os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+                temp_file_path = None
+                if debug:
+                    print(f"     ⚠️  Download attempt {attempt}/{_DOWNLOAD_MAX_ATTEMPTS} failed: {e}")
+
+        if last_error is not None:
+            if debug:
+                print(f"     ❌ Failed to download image: {last_error}")
             return False
     else:
         if not os.path.isabs(image_path):

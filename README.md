@@ -428,12 +428,14 @@ python batch_delete.py --all
 ### 项目结构
 ```plain
 Feishu-MD-Uploader/
+├── pdf_to_md.py             # PDF 转 Markdown 工具
 ├── src/
 │   ├── auth.py              # 飞书认证
 │   ├── config.py            # 配置管理
 │   ├── document.py          # 文档创建和权限管理
 │   ├── markdown_parser.py   # Markdown 解析核心
 │   ├── image_uploader.py    # 图片上传处理
+│   ├── pdf/                 # PDF 转换模块
 │   └── uploader.py          # 主程序入口
 ├── delete_doc.py            # 单个文档删除工具
 ├── batch_delete.py          # 批量文档删除工具
