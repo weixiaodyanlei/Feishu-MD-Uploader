@@ -10,6 +10,7 @@ class ElementKind(str, Enum):
     CODE = "code"
     PARAGRAPH = "paragraph"
     IMAGE = "image"
+    TABLE = "table"
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,18 @@ class MdElement:
 
 
 @dataclass
+class ExtractedTable:
+    page_index: int
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    markdown: str
+
+
+@dataclass
 class ExtractedDocument:
     blocks: list[TextBlock] = field(default_factory=list)
     links: list[LinkAnnotation] = field(default_factory=list)
     images: list[ExtractedImage] = field(default_factory=list)
+    tables: list[ExtractedTable] = field(default_factory=list)

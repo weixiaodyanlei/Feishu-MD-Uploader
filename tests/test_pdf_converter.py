@@ -1,17 +1,20 @@
 from pathlib import Path
 
-from src.pdf.extractor import merge_adjacent_line_blocks, merge_spans_to_blocks
+from src.pdf.extractor import merge_adjacent_line_blocks, merge_spans_to_blocks, _bbox_to_tuple
 from src.pdf.models import ElementKind, ExtractedDocument, ExtractedImage, LinkAnnotation, MdElement, TextBlock
 from src.pdf.typora_profile import (
     apply_links_to_blocks,
     build_heading_size_map,
     classify_document,
     detect_body_size,
+    is_code_font,
     is_monospace_font,
     map_heading_level,
     match_link_to_text,
     merge_code_blocks,
     rects_overlap,
+    _code_text_from_group,
+    _is_line_number_gutter,
 )
 from src.pdf.markdown_writer import render_markdown, save_images
 
@@ -35,6 +38,8 @@ def test_is_monospace_font_matches_common_names():
     assert is_monospace_font("Courier New") is True
     assert is_monospace_font("AAABCD+Menlo-Bold") is True
     assert is_monospace_font("Source Code Pro") is True
+    assert is_code_font("LucidaConsole") is True
+    assert is_code_font("LucidaConsole-Bold") is True
 
 
 def test_is_monospace_font_rejects_body_fonts():
@@ -168,6 +173,15 @@ def test_merge_spans_to_blocks_combines_same_line_spans():
     assert blocks[0].size == 11.0
 
 
+def test_bbox_to_tuple_accepts_tuple_and_rect_like():
+    assert _bbox_to_tuple((1.0, 2.0, 3.0, 4.0)) == (1.0, 2.0, 3.0, 4.0)
+
+    class Rect:
+        x0, y0, x1, y1 = 5.0, 6.0, 7.0, 8.0
+
+    assert _bbox_to_tuple(Rect()) == (5.0, 6.0, 7.0, 8.0)
+
+
 def test_merge_adjacent_line_blocks_combines_paragraph_lines():
     blocks = [
         TextBlock("Hello", "Arial", 11.0, 0, 0, 0, 0, 10, 10),
@@ -177,6 +191,27 @@ def test_merge_adjacent_line_blocks_combines_paragraph_lines():
     assert len(merged) == 1
     assert merged[0].text == "Hello world."
 
+
+def test_merge_adjacent_line_blocks_keeps_code_lines_separate():
+    blocks = [
+        TextBlock("import os", "LucidaConsole", 8.78, 0, 0, 115, 0, 10, 125),
+        TextBlock("print('hi')", "LucidaConsole", 8.78, 0, 0, 125, 0, 10, 135),
+    ]
+    merged = merge_adjacent_line_blocks(blocks)
+    assert len(merged) == 2
+    assert merged[0].text == "import os"
+    assert merged[1].text == "print('hi')"
+
+
+def test_code_text_from_group_strips_line_number_gutter():
+    group = [
+        TextBlock("1", "LucidaConsole", 8.78, 0, 0, 88, 0, 10, 98),
+        TextBlock("conda create -n test", "LucidaConsole", 8.78, 0, 0, 115, 0, 10, 125),
+        TextBlock("2", "LucidaConsole", 8.78, 0, 0, 88, 0, 10, 135),
+        TextBlock("conda activate test", "LucidaConsole", 8.78, 0, 0, 115, 0, 10, 145),
+    ]
+    assert _is_line_number_gutter(group[0]) is True
+    assert _code_text_from_group(group) == "conda create -n test\nconda activate test"
 
 def test_apply_links_to_blocks_falls_back_to_bare_url():
     block = TextBlock("body", "Arial", 11.0, 0, 0, 0, 0, 10, 10)
@@ -261,6 +296,7 @@ def test_render_markdown_formats_all_element_kinds():
         [
             MdElement(kind=ElementKind.HEADING, content="Title", level=1),
             MdElement(kind=ElementKind.PARAGRAPH, content="Hello"),
+            MdElement(kind=ElementKind.TABLE, content="| A | B |\n| --- | --- |\n| 1 | 2 |"),
             MdElement(kind=ElementKind.CODE, content="x = 1"),
             MdElement(
                 kind=ElementKind.IMAGE,
@@ -272,6 +308,7 @@ def test_render_markdown_formats_all_element_kinds():
     )
     assert "# Title" in md
     assert "Hello" in md
+    assert "| A | B |" in md
     assert "```" in md and "x = 1" in md
     assert "![image_001](my_assets/image_001.png)" in md
 
@@ -291,3 +328,16 @@ def test_save_images_writes_files(tmp_path: Path):
     assets_dir = tmp_path / "article_assets"
     save_images(images, assets_dir)
     assert (assets_dir / "image_001.png").read_bytes() == b"PNGDATA"
+
+
+def test_normalize_table_rows_from_sparse_grid():
+    raw = [
+        [None, None, "平台", None, "网址"],
+        [None, "OpenRouter", None, "https://example.com", None],
+    ]
+    from src.pdf.table_utils import normalize_table_rows, table_to_markdown
+
+    rows = normalize_table_rows(raw)
+    assert rows == [["平台", "网址"], ["OpenRouter", "https://example.com"]]
+    md = table_to_markdown(rows)
+    assert md.startswith("| 平台 | 网址 |")

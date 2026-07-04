@@ -5,6 +5,7 @@ import re
 from collections import Counter
 
 from src.pdf.models import ElementKind, ExtractedDocument, LinkAnnotation, MdElement, TextBlock
+from src.pdf.table_utils import filter_blocks_outside_tables
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,14 @@ _MONOSPACE_KEYWORDS = (
     "monaco",
     "source code pro",
     "monospace",
+    "lucida",
+    "lucidaconsole",
+    "dejavu",
+    "liberation mono",
+    "jetbrains",
+    "fira code",
+    "sf mono",
+    "inconsolata",
 )
 
 
@@ -27,8 +36,26 @@ def is_monospace_font(font_name: str) -> bool:
     return any(keyword in normalized for keyword in _MONOSPACE_KEYWORDS)
 
 
+def is_code_font(font_name: str) -> bool:
+    """Detect PDF code fonts (Typora often uses Lucida Console on Windows)."""
+    return is_monospace_font(font_name)
+
+
+def _is_line_number_gutter(block: TextBlock) -> bool:
+    """Strip PDF/Typora line-number gutter cells (e.g. '1', '2' at far left)."""
+    text = block.text.strip()
+    if not text.isdigit() or len(text) > 3:
+        return False
+    return block.x0 < 100
+
+
+def _code_text_from_group(group: list[TextBlock]) -> str:
+    lines = [b.text for b in group if b.text.strip() and not _is_line_number_gutter(b)]
+    return "\n".join(lines).strip("\n")
+
+
 def detect_body_size(blocks: list[TextBlock]) -> float:
-    sizes = [b.size for b in blocks if b.text.strip() and not is_monospace_font(b.font)]
+    sizes = [b.size for b in blocks if b.text.strip() and not is_code_font(b.font)]
     if not sizes:
         sizes = [b.size for b in blocks if b.text.strip()]
     if not sizes:
@@ -40,7 +67,7 @@ def build_heading_size_map(blocks: list[TextBlock], body_size: float) -> list[fl
     sizes = {
         b.size
         for b in blocks
-        if b.text.strip() and b.size > body_size and not is_monospace_font(b.font)
+        if b.text.strip() and b.size > body_size and not is_code_font(b.font)
     }
     return sorted(sizes, reverse=True)
 
@@ -51,7 +78,7 @@ def map_heading_level(
     body_size: float,
     heading_sizes: list[float],
 ) -> int | None:
-    if is_monospace_font(font) or size <= body_size:
+    if is_code_font(font) or size <= body_size:
         return None
     if not heading_sizes:
         return None
@@ -67,7 +94,7 @@ def merge_code_blocks(blocks: list[TextBlock]) -> list[list[TextBlock]]:
     blank_gap = 0
 
     for block in blocks:
-        if is_monospace_font(block.font):
+        if is_code_font(block.font):
             if current and blank_gap > 1:
                 groups.append(current)
                 current = []
@@ -181,7 +208,9 @@ def _sort_key_page_y_x(page_index: int, y0: float, x0: float) -> tuple[int, floa
 
 
 def classify_document(doc: ExtractedDocument, *, debug: bool = False) -> list[MdElement]:
-    blocks = apply_links_to_blocks(doc.blocks, doc.links)
+    table_bboxes = [(t.page_index, (t.x0, t.y0, t.x1, t.y1)) for t in doc.tables]
+    blocks = filter_blocks_outside_tables(doc.blocks, table_bboxes)
+    blocks = apply_links_to_blocks(blocks, doc.links)
     body_size = detect_body_size(blocks)
     heading_sizes = build_heading_size_map(blocks, body_size)
 
@@ -192,17 +221,17 @@ def classify_document(doc: ExtractedDocument, *, debug: bool = False) -> list[Md
     i = 0
     while i < len(blocks):
         block = blocks[i]
-        if not block.text.strip() and not is_monospace_font(block.font):
+        if not block.text.strip() and not is_code_font(block.font):
             i += 1
             continue
 
-        if is_monospace_font(block.font):
+        if is_code_font(block.font):
             group = [block]
             j = i + 1
             blank_gap = 0
             while j < len(blocks):
                 nxt = blocks[j]
-                if is_monospace_font(nxt.font):
+                if is_code_font(nxt.font):
                     group.append(nxt)
                     blank_gap = 0
                     j += 1
@@ -213,9 +242,10 @@ def classify_document(doc: ExtractedDocument, *, debug: bool = False) -> list[Md
                     j += 1
                     continue
                 break
-            code_text = "\n".join(b.text for b in group).strip("\n")
-            key = _sort_key_page_y_x(block.page_index, block.y0, block.x0)
-            elements.append((key, MdElement(kind=ElementKind.CODE, content=code_text)))
+            code_text = _code_text_from_group(group)
+            if code_text:
+                key = _sort_key_page_y_x(block.page_index, block.y0, block.x0)
+                elements.append((key, MdElement(kind=ElementKind.CODE, content=code_text)))
             i = j
             continue
 
@@ -244,6 +274,10 @@ def classify_document(doc: ExtractedDocument, *, debug: bool = False) -> list[Md
                 ),
             )
         )
+
+    for table in doc.tables:
+        key = _sort_key_page_y_x(table.page_index, table.y0, table.x0)
+        elements.append((key, MdElement(kind=ElementKind.TABLE, content=table.markdown)))
 
     elements.sort(key=lambda item: item[0])
     return [element for _, element in elements]

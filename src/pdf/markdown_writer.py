@@ -19,6 +19,8 @@ def render_markdown(elements: list[MdElement], assets_dir_name: str) -> str:
             parts.append(f"```\n{element.content}\n```")
         elif element.kind == ElementKind.PARAGRAPH:
             parts.append(element.content)
+        elif element.kind == ElementKind.TABLE:
+            parts.append(element.content)
         elif element.kind == ElementKind.IMAGE:
             filename = element.content
             ref = element.image_ref or f"{assets_dir_name}/{filename}"

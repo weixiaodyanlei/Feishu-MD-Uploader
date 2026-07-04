@@ -4,7 +4,9 @@ from pathlib import Path
 
 import fitz
 
-from src.pdf.models import ExtractedDocument, ExtractedImage, LinkAnnotation, TextBlock
+from src.pdf.models import ExtractedDocument, ExtractedImage, ExtractedTable, LinkAnnotation, TextBlock
+from src.pdf.table_utils import is_valid_table, normalize_table_rows, table_to_markdown
+from src.pdf.typora_profile import is_code_font
 
 
 class PdfConversionError(Exception):
@@ -66,6 +68,9 @@ def merge_adjacent_line_blocks(blocks: list[TextBlock], *, line_gap_threshold: f
     merged: list[TextBlock] = [blocks[0]]
     for block in blocks[1:]:
         prev = merged[-1]
+        if is_code_font(prev.font) or is_code_font(block.font):
+            merged.append(block)
+            continue
         same_style = (
             prev.page_index == block.page_index
             and prev.font == block.font
@@ -109,13 +114,49 @@ def _extract_links(page: fitz.Page, page_index: int) -> list[LinkAnnotation]:
     return links
 
 
+def _bbox_to_tuple(bbox) -> tuple[float, float, float, float]:
+    if isinstance(bbox, (tuple, list)) and len(bbox) >= 4:
+        return (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+    return (float(bbox.x0), float(bbox.y0), float(bbox.x1), float(bbox.y1))
+
+
 def _image_bbox(page: fitz.Page, xref: int) -> tuple[float, float, float, float]:
     for img in page.get_image_info(xrefs=True):
         if img.get("xref") == xref:
             bbox = img.get("bbox")
             if bbox:
-                return (float(bbox.x0), float(bbox.y0), float(bbox.x1), float(bbox.y1))
+                return _bbox_to_tuple(bbox)
     return (0.0, 0.0, 0.0, 0.0)
+
+
+def _extract_tables(page: fitz.Page, page_index: int) -> list[ExtractedTable]:
+    tables: list[ExtractedTable] = []
+    try:
+        found = page.find_tables()
+    except Exception:
+        return tables
+
+    for table in found.tables:
+        if table.row_count < 2 or table.col_count < 2:
+            continue
+        raw = table.extract()
+        rows = normalize_table_rows(raw)
+        if rows is None:
+            continue
+        bbox = tuple(float(v) for v in table.bbox)
+        if not is_valid_table(rows, bbox):
+            continue
+        tables.append(
+            ExtractedTable(
+                page_index=page_index,
+                x0=bbox[0],
+                y0=bbox[1],
+                x1=bbox[2],
+                y1=bbox[3],
+                markdown=table_to_markdown(rows),
+            )
+        )
+    return tables
 
 
 def extract_pdf(pdf_path: Path) -> ExtractedDocument:
@@ -130,6 +171,7 @@ def extract_pdf(pdf_path: Path) -> ExtractedDocument:
             line_blocks = merge_spans_to_blocks(page_dict, page_index)
             extracted.blocks.extend(merge_adjacent_line_blocks(line_blocks))
             extracted.links.extend(_extract_links(page, page_index))
+            extracted.tables.extend(_extract_tables(page, page_index))
 
             for img in page.get_images(full=True):
                 xref = int(img[0])
@@ -165,4 +207,5 @@ def extract_pdf(pdf_path: Path) -> ExtractedDocument:
     for idx, image in enumerate(extracted.images, start=1):
         image.image_index = idx
 
+    extracted.tables.sort(key=lambda t: (t.page_index, t.y0, t.x0))
     return extracted
