@@ -699,3 +699,49 @@ def set_public_permission(token: str):
              raise Exception(f"Failed to set permission: {response.code}, {response.msg}, {response.error}")
     
     return True
+
+
+def delete_document(document_id: str, client=None) -> bool:
+    """
+    Delete a Docx document by token.
+    Returns True on success.
+    """
+    if client is None:
+        client = get_client()
+
+    request = DeleteFileRequest.builder() \
+        .file_token(document_id) \
+        .type("docx") \
+        .build()
+
+    response = client.drive.v1.file.delete(request)
+
+    if not response.success():
+        raise Exception(
+            f"Failed to delete document: {response.code}, {response.msg}, {response.error}"
+        )
+
+    return True
+
+
+def delete_document(document_id: str, client=None) -> bool:
+    """
+    Delete a Docx document by token.
+    Returns True on success.
+    """
+    if client is None:
+        client = get_client()
+
+    request = DeleteFileRequest.builder() \
+        .file_token(document_id) \
+        .type("docx") \
+        .build()
+
+    response = client.drive.v1.file.delete(request)
+
+    if not response.success():
+        raise Exception(
+            f"Failed to delete document: {response.code}, {response.msg}, {response.error}"
+        )
+
+    return True

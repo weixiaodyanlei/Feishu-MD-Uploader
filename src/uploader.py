@@ -30,7 +30,7 @@ if sys.platform == "win32":
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.config import Config
-from src.document import create_document, set_public_permission, add_blocks
+from src.document import create_document, set_public_permission, add_blocks, delete_document
 from src.markdown_parser import MarkdownParser
 from src.image_uploader import ImageUploader
 from src.auth import get_client
@@ -195,6 +195,18 @@ def _upload_image_and_update_block(
     return success
 
 
+def _cleanup_failed_document(doc_token: str, client, debug: bool = False) -> None:
+    """Delete a partially created document after upload failure."""
+    try:
+        delete_document(doc_token, client=client)
+        print(f"🗑️  Deleted incomplete document: {doc_token}")
+    except Exception as e:
+        print(f"⚠️  Failed to delete incomplete document {doc_token}: {e}")
+        if debug:
+            import traceback
+            traceback.print_exc()
+
+
 def upload_one_markdown(
     md_path: Path,
     *,
@@ -217,110 +229,116 @@ def upload_one_markdown(
 
     print(f"🚀 Starting upload for '{title}' ({md_path.name})...")
 
-    folder_token = folder_token or Config.FOLDER_TOKEN
-    if debug:
-        print("Creating document...")
-        if folder_token:
-            print(f"Using folder token: {folder_token}")
-    doc_token = create_document(title, folder_token)
-    if debug:
-        print(f"✅ Document created. Token: {doc_token}")
-    print(f"🔗 URL: {Config.FEISHU_DOC_HOST}/docx/{doc_token}")
+    doc_token = None
+    try:
+        folder_token = folder_token or Config.FOLDER_TOKEN
+        if debug:
+            print("Creating document...")
+            if folder_token:
+                print(f"Using folder token: {folder_token}")
+        doc_token = create_document(title, folder_token)
+        if debug:
+            print(f"✅ Document created. Token: {doc_token}")
+        print(f"🔗 URL: {Config.FEISHU_DOC_HOST}/docx/{doc_token}")
 
-    if debug:
-        print("Parsing Markdown...")
-    image_uploader = ImageUploader(client)
-    md_parser = MarkdownParser(image_uploader, doc_token, source_type=source_type)
-    blocks = md_parser.parse(content)
-    if debug:
-        print(f"✅ Parsed {len(blocks)} blocks.")
+        if debug:
+            print("Parsing Markdown...")
+        image_uploader = ImageUploader(client)
+        md_parser = MarkdownParser(image_uploader, doc_token, source_type=source_type)
+        blocks = md_parser.parse(content)
+        if debug:
+            print(f"✅ Parsed {len(blocks)} blocks.")
 
-    if blocks:
-        chunk_size = 100
-        block_id_map = []
-        total_chunks = (len(blocks) + chunk_size - 1) // chunk_size
-
-        if TQDM_AVAILABLE and not debug:
-            print("📤 Uploading content blocks...")
-            blocks_pbar = tqdm(total=total_chunks, desc="Blocks", unit="chunk", ncols=80)
-        else:
-            blocks_pbar = None
-            if debug:
-                print("Uploading content blocks...")
-
-        for i in range(0, len(blocks), chunk_size):
-            chunk = blocks[i : i + chunk_size]
-            response_children = add_blocks(doc_token, chunk, debug=debug)
-            for child in response_children:
-                block_id_map.append(child.block_id)
-
-            if blocks_pbar:
-                blocks_pbar.update(1)
-            elif debug:
-                print(f"   - Uploaded blocks {i+1} to {min(i+chunk_size, len(blocks))}")
-
-        if blocks_pbar:
-            blocks_pbar.close()
-            print("✅ Content uploaded.")
-        elif debug:
-            print("✅ Content uploaded.")
-
-        pending_images = md_parser.get_pending_images()
-        if pending_images:
-            success_count = 0
-            fail_count = 0
+        if blocks:
+            chunk_size = 100
+            block_id_map = []
+            total_chunks = (len(blocks) + chunk_size - 1) // chunk_size
 
             if TQDM_AVAILABLE and not debug:
-                print(f"🖼️  Uploading {len(pending_images)} images (3 concurrent)...")
-                img_pbar = tqdm(total=len(pending_images), desc="Images", unit="img", ncols=80)
+                print("📤 Uploading content blocks...")
+                blocks_pbar = tqdm(total=total_chunks, desc="Blocks", unit="chunk", ncols=80)
             else:
-                img_pbar = None
+                blocks_pbar = None
                 if debug:
-                    print(f"Uploading {len(pending_images)} images (3 concurrent)...")
+                    print("Uploading content blocks...")
 
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                futures = {
-                    executor.submit(
-                        _upload_image_and_update_block,
-                        img_info,
-                        markdown_dir,
-                        client,
-                        doc_token,
-                        block_id_map,
-                        debug,
-                    ): img_info
-                    for img_info in pending_images
-                }
+            for i in range(0, len(blocks), chunk_size):
+                chunk = blocks[i : i + chunk_size]
+                response_children = add_blocks(doc_token, chunk, debug=debug)
+                for child in response_children:
+                    block_id_map.append(child.block_id)
 
-                for future in as_completed(futures):
-                    try:
-                        if future.result():
-                            success_count += 1
-                        else:
+                if blocks_pbar:
+                    blocks_pbar.update(1)
+                elif debug:
+                    print(f"   - Uploaded blocks {i+1} to {min(i+chunk_size, len(blocks))}")
+
+            if blocks_pbar:
+                blocks_pbar.close()
+                print("✅ Content uploaded.")
+            elif debug:
+                print("✅ Content uploaded.")
+
+            pending_images = md_parser.get_pending_images()
+            if pending_images:
+                success_count = 0
+                fail_count = 0
+
+                if TQDM_AVAILABLE and not debug:
+                    print(f"🖼️  Uploading {len(pending_images)} images (3 concurrent)...")
+                    img_pbar = tqdm(total=len(pending_images), desc="Images", unit="img", ncols=80)
+                else:
+                    img_pbar = None
+                    if debug:
+                        print(f"Uploading {len(pending_images)} images (3 concurrent)...")
+
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    futures = {
+                        executor.submit(
+                            _upload_image_and_update_block,
+                            img_info,
+                            markdown_dir,
+                            client,
+                            doc_token,
+                            block_id_map,
+                            debug,
+                        ): img_info
+                        for img_info in pending_images
+                    }
+
+                    for future in as_completed(futures):
+                        try:
+                            if future.result():
+                                success_count += 1
+                            else:
+                                fail_count += 1
+                        except Exception as e:
                             fail_count += 1
-                    except Exception as e:
-                        fail_count += 1
-                        if debug:
-                            img_info = futures[future]
-                            print(f"     ❌ Image upload failed: {img_info.get('image_path', '?')} — {e}")
-                    if img_pbar:
-                        img_pbar.update(1)
+                            if debug:
+                                img_info = futures[future]
+                                print(f"     ❌ Image upload failed: {img_info.get('image_path', '?')} — {e}")
+                        if img_pbar:
+                            img_pbar.update(1)
 
-            if img_pbar:
-                img_pbar.close()
-            msg = "✅ Images processed."
-            if fail_count:
-                msg += f" ({success_count} success, {fail_count} failed)"
-            print(msg)
+                if img_pbar:
+                    img_pbar.close()
+                msg = "✅ Images processed."
+                if fail_count:
+                    msg += f" ({success_count} success, {fail_count} failed)"
+                print(msg)
 
-    if debug:
-        print("Setting permissions...")
-    set_public_permission(doc_token)
-    if debug:
-        print("✅ Permissions set to 'Organization members can edit'.")
+        if debug:
+            print("Setting permissions...")
+        set_public_permission(doc_token)
+        if debug:
+            print("✅ Permissions set to 'Organization members can edit'.")
 
-    print(f"🎉 Upload complete: {md_path.name}\n")
-    return doc_token
+        print(f"🎉 Upload complete: {md_path.name}\n")
+        return doc_token
+    except Exception:
+        if doc_token:
+            _cleanup_failed_document(doc_token, client, debug)
+        raise
 
 
 def main():
